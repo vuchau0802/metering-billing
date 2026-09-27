@@ -30,4 +30,38 @@ These rates are illustrative and are not tied to any real provider's current pri
 
 ## Setup
 
-Coming as the project develops — see `design.md` for the plan and `BUILDLOG.md` for progress.
+Create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Copy the environment template and start PostgreSQL:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d
+```
+
+Apply the schema and seed demo data:
+
+```powershell
+alembic upgrade head
+python seed.py
+```
+
+Start the API:
+
+```powershell
+uvicorn app.main:app --reload --port 8004
+```
+
+The API documentation is available at `http://localhost:8004/docs`.
+
+Run the test suite:
+
+```powershell
+pytest -q
+```

@@ -1,8 +1,8 @@
 # Evaluator manifest. `run` boots the system, `seed` loads demo data.
-run: uvicorn main:app --reload --port 8004
+run: uvicorn app.main:app --reload --port 8004
 seed: python seed.py
 base_url: http://localhost:8004
-# test: pytest -q       
+test: pytest -q
 
 # Endpoints to probe (Layer 2 acceptance probes in the brief).
 endpoints:

@@ -34,4 +34,42 @@ An honest record of what was built, and where AI helped — including where it w
 
 ## Phase 2 — Core billing logic
 
-Not started.
+**Status: complete.** Gate met: duplicate requests create one event, and quota
+and entitlement boundaries return the documented status codes.
+
+### What was built
+- FastAPI application with `/health`, `/generate`, and `/usage/{tenant_id}`.
+- PostgreSQL schema managed through Alembic migrations.
+- Seeded Free and Pro plans plus active and past-due demo tenants.
+- Integer-only pricing in micro-USD.
+- UTC calendar-month quota calculation.
+- Tenant row locking to serialize quota checks.
+- Database-enforced idempotency through a unique idempotency key.
+- Stored response snapshots and the `Idempotent-Replay` response header.
+- Machine-readable 400, 402, 404, 409, and 429 responses.
+- Unit and database-backed API tests.
+
+### Verification
+- `python -m compileall app` completed successfully.
+- `pytest -q` reported 31 passing tests.
+- Sending the same request twice returned identical bodies and one database
+  event.
+- Exact quota usage was accepted.
+- One token beyond quota returned 429 without changing usage.
+- A past-due tenant returned 402.
+
+### AI assistance
+AI helped translate the design into incremental service, repository, schema,
+migration, and test code. I entered and ran each step, inspected the outputs,
+and fixed issues as they appeared.
+
+The initial SQLAlchemy enum declarations caused Alembic to generate an invalid
+`metadata=MetaData()` expression. I removed the metadata argument from the
+model enum declarations and generated migration expressions. After that
+correction, upgrade and upgrade-to-head succeeded.
+
+### Decisions to explain in my own words
+- Why tenant rows are locked during quota checks.
+- Why response snapshots are stored for idempotent replay.
+- Why rejected quota requests never create usage events.
+- Why money is stored as integer micro-USD.
