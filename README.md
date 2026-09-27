@@ -2,4 +2,32 @@
 
 Metering, quota enforcement, cost calculation, and Stripe subscription sync for a multi-tenant SaaS.
 
-Setup instructions coming as the project develops.
+The design — data model, quota rules, pricing math, and idempotency strategy — is in [`design.md`](design.md).
+
+## Plans & quotas
+
+| Plan | API calls / month | AI tokens / month |
+|------|-------------------|-------------------|
+| Free | 1,000 | 100,000 |
+| Pro  | 50,000 | 5,000,000 |
+
+The quota window is the **UTC calendar month**. A tenant may reach exactly its limit; the next request is the one refused.
+
+## Pinned pricing constants
+
+All money is an integer count of **micro-USD** (1 USD = 1,000,000 micro-USD). No floats touch a money value.
+
+| Constant | Value (micro-USD per 1,000 units) | USD |
+|----------|-----------------------------------|-----|
+| `API_CALL_PRICE_PER_1K` | 2,000 | $0.002 / call |
+| `INPUT_PRICE_PER_1K` | 150,000 | $0.15 / 1k tokens |
+| `CACHED_INPUT_PRICE_PER_1K` | 75,000 | $0.075 / 1k tokens |
+| `OUTPUT_PRICE_PER_1K` | 600,000 | $0.60 / 1k tokens |
+
+Reasoning tokens bill at the **output** rate. Cached input tokens bill at half the input rate. Categories are costed separately and only then summed — see the cost formula in [`design.md`](design.md#pinned-pricing-constants).
+
+These rates are illustrative and are not tied to any real provider's current pricing.
+
+## Setup
+
+Coming as the project develops — see `design.md` for the plan and `BUILDLOG.md` for progress.
