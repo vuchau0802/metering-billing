@@ -85,3 +85,23 @@ class ErrorResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
+
+class CheckoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: StrictPositiveInt
+
+
+class CheckoutResponse(BaseModel):
+    session_id: str
+    checkout_url: str
+
+class WebhookResponse(BaseModel):
+    received: bool
+    duplicate: bool
+    event_type: str
+
+class BillingRedirectResponse(BaseModel):
+    status: Literal["success", "canceled"]
+    message: str
+    session_id: str | None = None

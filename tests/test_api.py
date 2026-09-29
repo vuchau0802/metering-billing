@@ -251,3 +251,29 @@ def test_unknown_tenant_returns_404(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "tenant_not_found"
+
+def test_billing_success_redirect() -> None:
+    with TestClient(app) as client:
+        response = client.get(
+            "/billing/success",
+            params={"session_id": "cs_test_example"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "message": "Checkout completed successfully.",
+        "session_id": "cs_test_example",
+    }
+
+
+def test_billing_cancel_redirect() -> None:
+    with TestClient(app) as client:
+        response = client.get("/billing/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "canceled",
+        "message": "Checkout was canceled.",
+        "session_id": None,
+    }

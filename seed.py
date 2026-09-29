@@ -1,20 +1,24 @@
+from app.config import get_settings
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import Plan, PlanName, Tenant, TenantStatus
 
-
 def seed_plans(db: Session) -> None:
+    settings = get_settings()
+
     plans = [
         {
             "name": PlanName.FREE,
             "api_calls_limit": 1_000,
             "ai_tokens_limit": 100_000,
+            "stripe_price_id": None,
         },
         {
             "name": PlanName.PRO,
             "api_calls_limit": 50_000,
             "ai_tokens_limit": 5_000_000,
+            "stripe_price_id": settings.stripe_pro_price_id,
         },
     ]
 
@@ -26,6 +30,7 @@ def seed_plans(db: Session) -> None:
         else:
             plan.api_calls_limit = data["api_calls_limit"]
             plan.ai_tokens_limit = data["ai_tokens_limit"]
+            plan.stripe_price_id = data["stripe_price_id"]
 
     db.flush()
 

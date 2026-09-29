@@ -73,3 +73,50 @@ correction, upgrade and upgrade-to-head succeeded.
 - Why response snapshots are stored for idempotent replay.
 - Why rejected quota requests never create usage events.
 - Why money is stored as integer micro-USD.
+
+---
+
+## Phase 3 - Stripe integration
+
+**Status: complete.** Gate met: a Stripe test-mode Checkout changed a seeded
+tenant from Free to Pro through verified webhooks.
+
+### What was built
+- Stripe test-mode Checkout Session creation for Free tenants.
+- Existing Stripe customer reuse when a tenant already has a customer ID.
+- Raw-body Stripe webhook signature verification.
+- Database-backed webhook event deduplication.
+- Synchronization for `checkout.session.completed`.
+- Synchronization for subscription created, updated, and deleted events.
+- Subscription status, billing period, and cancellation persistence.
+- Tenant plan and entitlement-status synchronization.
+- Checkout success and cancellation redirect endpoints.
+- Automated tests for signatures, replay, upgrades, subscription lifecycle,
+  and redirect responses.
+
+### Verification
+- `python -m compileall app tests` completed successfully.
+- `python -m pytest -q` reported 37 passing tests.
+- Stripe CLI forwarded `customer.subscription.created` with HTTP 200.
+- Stripe CLI forwarded `checkout.session.completed` with HTTP 200.
+- Tenant 1 changed from `free active` to `pro active`.
+- The Stripe customer ID, subscription ID, active status, and UTC billing
+  period were persisted.
+- A second Checkout attempt for tenant 1 returned `already_subscribed`.
+
+### AI assistance
+AI helped divide the integration into repository, service, endpoint, and test
+steps. I entered each change, ran the tests, and verified the real Stripe flow
+locally.
+
+A webhook test exposed that Stripe SDK resource objects do not implement the
+dictionary `.get()` method. Converting `event["data"]["object"]` with
+`.to_dict()` fixed the integration. The first Stripe CLI command also passed
+an unquoted event list in PowerShell, which Stripe interpreted as one invalid
+event name. Quoting the comma-separated list fixed local forwarding.
+
+### Decisions to explain in my own words
+- Why signatures are verified against the untouched request body.
+- Why the processed event marker and subscription update commit together.
+- Why Checkout metadata carries the internal tenant ID.
+- Why canceled subscriptions revert the tenant plan to Free.

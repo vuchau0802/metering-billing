@@ -14,6 +14,11 @@ class Settings(BaseSettings):
         "postgresql+psycopg://postgres:postgres@localhost:5432/metering"
     )
 
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_pro_price_id: str | None = None
+    app_base_url: str = "http://localhost:8004"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

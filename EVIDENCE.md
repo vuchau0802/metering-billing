@@ -96,3 +96,64 @@ total:            367500 micro-USD
 ```
 
 No floating-point money is used.
+
+---
+
+## Phase 3 - Stripe integration
+
+Date verified: 2026-09-29
+
+### Automated verification
+
+Command: `python -m pytest -q`
+
+Result: `37 passed`
+
+The tests cover forged webhook signatures, webhook replay deduplication,
+Checkout Free-to-Pro synchronization, subscription lifecycle updates, billing
+period persistence, cancellation, and billing redirect endpoints.
+
+### Signature verification probe
+
+A request with a forged `Stripe-Signature` returned HTTP 400:
+
+```json
+{
+  "error": {
+    "code": "invalid_webhook_signature",
+    "message": "The Stripe webhook signature is invalid"
+  }
+}
+```
+
+### Replay probe
+
+The same correctly signed event was delivered twice. The first response
+reported `duplicate: false`; the second reported `duplicate: true`. A direct
+database count showed one processed webhook row.
+
+### Live Stripe Checkout gate
+
+Stripe CLI forwarded real test-mode events to the local API:
+
+```text
+customer.subscription.created -> HTTP 200
+checkout.session.completed -> HTTP 200
+```
+
+Before Checkout, tenant 1 was `free active` with no Stripe customer or
+subscription. After verified webhook delivery, the database reported:
+
+```text
+tenant: pro active cus_...
+subscription: sub_... active
+current_period_start: 2026-09-29T04:51:45Z
+current_period_end: 2026-10-29T04:51:45Z
+```
+
+The Stripe customer ID, subscription ID, active status, and UTC billing period
+were persisted. A subsequent Checkout request for tenant 1 returned
+`already_subscribed`, preventing a duplicate subscription.
+
+Conclusion: the Phase 3 gate passed. A real Stripe test-mode Checkout upgraded
+a Free tenant to Pro through verified, replay-safe webhook processing.

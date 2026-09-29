@@ -9,9 +9,13 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas import (
+    BillingRedirectResponse,
+    CheckoutRequest,
+    CheckoutResponse,
     GenerateRequest,
     GenerateResponse,
     UsageResponse,
+    WebhookResponse,
 )
 from app.services.metering import (
     IdempotencyConflictError,
@@ -19,6 +23,17 @@ from app.services.metering import (
     TenantNotFoundError,
     get_usage_report,
     record_generate,
+)
+from app.services.billing import (
+    AlreadySubscribedError,
+    BillingConfigurationError,
+    CheckoutCreationError,
+    create_checkout_session,
+)
+from app.services.webhooks import (
+    InvalidWebhookPayloadError,
+    InvalidWebhookSignatureError,
+    process_webhook,
 )
 from app.services.quotas import QuotaExceededError
 
@@ -142,6 +157,82 @@ async def handle_quota_exceeded(
         },
     )
 
+@app.exception_handler(AlreadySubscribedError)
+async def handle_already_subscribed(
+    request: Request,
+    error: AlreadySubscribedError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": {
+                "code": "already_subscribed",
+                "message": str(error),
+            }
+        },
+    )
+
+
+@app.exception_handler(BillingConfigurationError)
+async def handle_billing_configuration(
+    request: Request,
+    error: BillingConfigurationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "billing_not_configured",
+                "message": str(error),
+            }
+        },
+    )
+
+
+@app.exception_handler(CheckoutCreationError)
+async def handle_checkout_creation(
+    request: Request,
+    error: CheckoutCreationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": {
+                "code": "checkout_creation_failed",
+                "message": str(error),
+            }
+        },
+    )
+
+@app.exception_handler(InvalidWebhookSignatureError)
+async def handle_invalid_webhook_signature(
+    request: Request,
+    error: InvalidWebhookSignatureError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "code": "invalid_webhook_signature",
+                "message": str(error),
+            }
+        },
+    )
+
+@app.exception_handler(InvalidWebhookPayloadError)
+async def handle_invalid_webhook_payload(
+    request: Request,
+    error: InvalidWebhookPayloadError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "code": "invalid_webhook_payload",
+                "message": str(error),
+            }
+        },
+    )
 
 @app.get("/health")
 def health() -> dict[str, str]:
@@ -185,3 +276,66 @@ def generate(
         response.headers["Idempotent-Replay"] = "true"
 
     return result.response
+
+@app.post(
+    "/billing/checkout",
+    response_model=CheckoutResponse,
+)
+def billing_checkout(
+    payload: CheckoutRequest,
+    db: Session = Depends(get_db),
+) -> CheckoutResponse:
+    return create_checkout_session(
+        db,
+        payload.tenant_id,
+    )
+
+@app.post(
+    "/webhooks/stripe",
+    response_model=WebhookResponse,
+)
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: Annotated[
+        str,
+        Header(alias="Stripe-Signature"),
+    ],
+    db: Session = Depends(get_db),
+) -> WebhookResponse:
+    payload = await request.body()
+
+    result = process_webhook(
+        db,
+        payload=payload,
+        signature=stripe_signature,
+    )
+
+    return WebhookResponse(
+        received=True,
+        duplicate=result.duplicate,
+        event_type=result.event_type,
+    )
+
+@app.get(
+    "/billing/success",
+    response_model=BillingRedirectResponse,
+)
+def billing_success(
+    session_id: str,
+) -> BillingRedirectResponse:
+    return BillingRedirectResponse(
+        status="success",
+        message="Checkout completed successfully.",
+        session_id=session_id,
+    )
+
+
+@app.get(
+    "/billing/cancel",
+    response_model=BillingRedirectResponse,
+)
+def billing_cancel() -> BillingRedirectResponse:
+    return BillingRedirectResponse(
+        status="canceled",
+        message="Checkout was canceled.",
+    )
