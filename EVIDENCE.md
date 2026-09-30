@@ -157,3 +157,82 @@ were persisted. A subsequent Checkout request for tenant 1 returned
 
 Conclusion: the Phase 3 gate passed. A real Stripe test-mode Checkout upgraded
 a Free tenant to Pro through verified, replay-safe webhook processing.
+
+---
+
+## Phase 4 - Cost and finalization
+
+Date verified: 2026-09-30
+
+### Automated verification
+
+Command: `python -m pytest -q`
+
+Result: `40 passed in 0.99s`
+
+The reconciliation tests prove:
+
+- A transient Stripe failure is retried and succeeds.
+- Retry delays follow exponential backoff.
+- A persistent failure stops after three attempts.
+- Persistent failure produces a critical reconciliation alert.
+- An incomplete run returns a nonzero process exit code.
+
+### Live background-job probe
+
+Command:
+
+```powershell
+python -m app.jobs.reconcile_subscriptions
+```
+
+Observed:
+
+```text
+Stripe subscription retrieval -> HTTP 200
+Reconciled Stripe subscription sub_...
+Reconciliation complete: checked=1 succeeded=1 failed=0
+```
+
+Database verification after reconciliation:
+
+```text
+tenant: pro active
+subscription: sub_... active
+current_period_start: 2026-09-29T04:51:45Z
+current_period_end: 2026-10-29T04:51:45Z
+```
+
+Conclusion: subscription reconciliation runs outside the HTTP path, repairs
+state through shared synchronization logic, retries transient failures, and
+provides an observable failure signal.
+
+### Final acceptance audit
+
+All five published acceptance probes are covered by automated or live
+evidence:
+
+1. Repeating one billable request returns the original response and creates
+   one usage event.
+2. Exact quota usage is accepted; the next unit returns a clear quota error.
+3. Stripe test Checkout upgrades a tenant from Free to Pro through verified
+   webhooks.
+4. A forged webhook returns 400, while a replayed valid event is processed
+   once.
+5. Cached input and reasoning-token pricing produce the pinned totals, and
+   `/usage` returns the same frozen cost.
+
+The final `GET /usage/1` probe returned HTTP 200:
+
+```text
+api_calls: used=0 limit=50000 remaining=50000
+ai_tokens: used=1800 limit=5000000 remaining=4998200
+cost_microusd: 367500
+```
+
+Migration verification reported `e5ca33e8ba3d (head)` as both the available
+and currently applied Alembic revision. The required submission files are
+present, `.env` and PDF files are ignored, and no Stripe secret patterns were
+found in tracked files or Git history.
+
+Conclusion: the Phase 4 cost gate and final capstone self-check pass.

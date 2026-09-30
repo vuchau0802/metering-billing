@@ -120,3 +120,37 @@ event name. Quoting the comma-separated list fixed local forwarding.
 - Why the processed event marker and subscription update commit together.
 - Why Checkout metadata carries the internal tenant ID.
 - Why canceled subscriptions revert the tenant plan to Free.
+
+---
+
+## Phase 4 - Cost and finalization
+
+**Status: complete.** Gate met: `/usage` matches the pinned pricing constants,
+and the final acceptance and repository audits pass.
+
+### Background reconciliation
+- Added a standalone Stripe subscription reconciliation command.
+- Reused the same subscription synchronization logic as verified webhooks.
+- Added three-attempt exponential retry behavior.
+- Added critical failure logging and a nonzero process exit code.
+- Added tests for transient recovery, persistent failure, and alert signaling.
+
+### Verification
+- `python -m pytest -q` reported 40 passing tests.
+- Live reconciliation retrieved one Stripe subscription with HTTP 200.
+- The job reported `checked=1 succeeded=1 failed=0`.
+- PostgreSQL remained synchronized as `pro active` with the correct active
+  subscription and UTC billing period.
+- `GET /usage/1` returned the Pro limits, 1,800 used AI tokens, and the
+  expected frozen cost of 367,500 micro-USD.
+- Alembic reported `e5ca33e8ba3d (head)` as both the available and applied
+  migration head.
+- Required submission files and ignore rules were present.
+- No Stripe secret patterns were found in tracked files or Git history.
+
+### AI assistance
+AI helped extract webhook synchronization into reusable logic and design the
+standalone reconciliation command. I entered and tested the implementation.
+The initial refactor renamed the function definition without updating both
+dispatcher calls, causing one test failure. Updating both references restored
+the suite to green.

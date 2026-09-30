@@ -104,12 +104,12 @@ def _dispatch_event(
         "customer.subscription.created",
         "customer.subscription.updated",
     }:
-        _handle_subscription_event(
+        synchronize_subscription(
             db,
             event_object,
         )
     elif event_type == "customer.subscription.deleted":
-        _handle_subscription_event(
+        synchronize_subscription(
             db,
             event_object,
             deleted=True,
@@ -161,7 +161,7 @@ def _billing_period(
     )
 
 
-def _handle_subscription_event(
+def synchronize_subscription(
     db: Session,
     subscription: dict[str, Any],
     *,

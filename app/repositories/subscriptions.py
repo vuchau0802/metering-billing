@@ -61,3 +61,17 @@ def upsert_subscription(
         subscription.cancel_at_period_end = cancel_at_period_end
 
     return subscription
+
+def list_reconcilable_ids(
+    db: Session,
+) -> list[str]:
+    statement = (
+        select(Subscription.stripe_subscription_id)
+        .where(
+            Subscription.status
+            != SubscriptionStatus.CANCELED
+        )
+        .order_by(Subscription.id)
+    )
+
+    return list(db.scalars(statement))

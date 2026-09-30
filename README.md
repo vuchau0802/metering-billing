@@ -4,6 +4,43 @@ Metering, quota enforcement, cost calculation, and Stripe subscription sync for 
 
 The design — data model, quota rules, pricing math, and idempotency strategy — is in [`design.md`](design.md).
 
+## Architecture
+
+```text
+Client
+  |
+  v
+FastAPI HTTP layer
+  |-- POST /generate
+  |     -> Metering service
+  |     -> Tenant lock and quota check
+  |     -> Cost calculation
+  |     -> PostgreSQL usage event
+  |
+  |-- GET /usage/{tenant_id}
+  |     -> Monthly usage and cost rollup
+  |
+  |-- POST /billing/checkout
+  |     -> Stripe Checkout
+  |
+  `-- POST /webhooks/stripe
+        -> Raw-body signature verification
+        -> Event deduplication
+        -> Subscription and tenant synchronization
+
+External scheduler
+  |
+  `-> python -m app.jobs.reconcile_subscriptions
+        -> Stripe Subscription API
+        -> Retry with exponential backoff
+        -> Shared subscription synchronization
+        -> PostgreSQL
+```
+
+The HTTP, service, repository, and persistence layers are separated. Webhooks
+are the primary Stripe synchronization path. The reconciliation job provides
+an independent repair path for missed or delayed webhook updates.
+
 ## Plans & quotas
 
 | Plan | API calls / month | AI tokens / month |
@@ -110,3 +147,38 @@ state. Processed Stripe event IDs provide replay-safe webhook handling.
 | `POST` | `/webhooks/stripe` | Verify and process Stripe webhook events |
 | `GET` | `/billing/success` | Checkout success redirect response |
 | `GET` | `/billing/cancel` | Checkout cancellation redirect response |
+
+## Subscription reconciliation job
+
+Run reconciliation independently from the API:
+
+```powershell
+python -m app.jobs.reconcile_subscriptions
+```
+
+The job retrieves every non-canceled local subscription from Stripe and applies
+the same synchronization logic used by verified webhooks. Each subscription is
+retried up to three times with exponential backoff.
+
+A complete run exits with code `0`. Persistent failures produce a critical
+`RECONCILIATION_ALERT` log and exit with code `1`, allowing an external
+scheduler or monitoring service to raise an operational alert.
+
+The command is designed to be scheduled externally, for example by Windows
+Task Scheduler, cron, or a deployment platform's scheduled-job facility.
+
+## Limitations
+
+- Stripe integration is test mode only; no real payments are accepted.
+- Authentication and authorization are outside this capstone. A production
+  API must derive the tenant from authenticated identity rather than trusting
+  a request body or path parameter.
+- Only Free and Pro plans and two usage types are supported.
+- Usage quotas reset by UTC calendar month, independently of Stripe billing
+  periods.
+- Invoicing, overage billing, proration, refunds, and tax calculation are not
+  implemented.
+- The reconciliation worker is a standalone command and requires an external
+  scheduler in deployment.
+- Billing success and cancellation endpoints return JSON rather than a
+  customer-facing frontend.
