@@ -154,3 +154,26 @@ standalone reconciliation command. I entered and tested the implementation.
 The initial refactor renamed the function definition without updating both
 dispatcher calls, causing one test failure. Updating both references restored
 the suite to green.
+
+---
+
+## Review hardening
+
+**Status: complete.** The external review findings are addressed and the full
+suite passes with tenant isolation enabled.
+
+### What changed
+- Added hashed per-tenant API keys and `X-Tenant-Key` authorization to usage,
+  metering, and Checkout routes.
+- Rejected all-zero AI token requests before they can create usage events.
+- Moved webhook deduplication races into a savepoint so repositories never
+  roll back a caller-owned transaction.
+- Kept raw-body Stripe signature verification while running the synchronous
+  webhook handler and SQLAlchemy session in FastAPI's threadpool.
+- Made tenant seeding preserve Stripe-managed plan and entitlement state.
+- Added regression coverage for authentication, zero usage, and safe seeding.
+
+### Verification
+- Alembic upgraded to `c91b2f6e4a7d (head)`.
+- Reseeding completed without changing the existing Stripe subscription state.
+- `python -m pytest -q` reported 48 passing tests.

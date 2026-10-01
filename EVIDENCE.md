@@ -236,3 +236,23 @@ present, `.env` and PDF files are ignored, and no Stripe secret patterns were
 found in tracked files or Git history.
 
 Conclusion: the Phase 4 cost gate and final capstone self-check pass.
+
+---
+
+## Review hardening verification
+
+Date verified: 2026-09-30
+
+- Alembic applied `c91b2f6e4a7d`, adding unique SHA-256 tenant API-key hashes.
+- Seed execution completed after migration without overwriting Stripe-managed
+  plan, status, customer, or subscription data.
+- Tenant-scoped endpoints reject missing or cross-tenant credentials with 401.
+- An all-zero token request returns 400 and creates no usage event.
+- Webhook duplicate-key races use a savepoint; transaction rollback remains
+  owned by the webhook service.
+- Stripe's raw request body is still signature-verified, while synchronous
+  database processing runs through a normal FastAPI threadpool endpoint.
+
+Command: `python -m pytest -q`
+
+Result: `48 passed, 1 warning in 1.47s`

@@ -29,11 +29,19 @@ CHECKOUT_SUBSCRIPTION_ID = "sub_test_phase3"
 SUBSCRIPTION_TENANT_ID = 9002
 SUBSCRIPTION_CUSTOMER_ID = "cus_test_lifecycle"
 SUBSCRIPTION_ID = "sub_test_lifecycle"
+ORDERING_TENANT_ID = 9003
+ORDERING_CUSTOMER_ID = "cus_test_ordering"
+ORDERING_SUBSCRIPTION_ID = "sub_test_ordering"
 
 SUBSCRIPTION_EVENT_IDS = [
     "evt_test_subscription_created",
     "evt_test_subscription_updated",
     "evt_test_subscription_deleted",
+]
+ORDERING_EVENT_IDS = [
+    "evt_test_ordering_created",
+    "evt_test_ordering_deleted",
+    "evt_test_ordering_stale_updated",
 ]
 
 def clean_webhook_test_data() -> None:
@@ -104,23 +112,31 @@ def build_subscription_payload(
     event_id: str,
     event_type: str,
     status: str,
+    created: int | None = None,
+    tenant_id: int = SUBSCRIPTION_TENANT_ID,
+    customer_id: str = SUBSCRIPTION_CUSTOMER_ID,
+    subscription_id: str = SUBSCRIPTION_ID,
 ) -> bytes:
     event = {
         "id": event_id,
         "object": "event",
         "type": event_type,
-        "created": int(time.time()),
+        "created": (
+            int(time.time())
+            if created is None
+            else created
+        ),
         "livemode": False,
         "data": {
             "object": {
-                "id": SUBSCRIPTION_ID,
+                "id": subscription_id,
                 "object": "subscription",
-                "customer": SUBSCRIPTION_CUSTOMER_ID,
+                "customer": customer_id,
                 "status": status,
                 "cancel_at_period_end": False,
                 "metadata": {
                     "tenant_id": str(
-                        SUBSCRIPTION_TENANT_ID
+                        tenant_id
                     ),
                     "plan": "pro",
                 },
@@ -248,6 +264,12 @@ def test_checkout_completed_upgrades_tenant_to_pro(
             )
         )
         db.execute(
+            delete(Subscription).where(
+                Subscription.stripe_subscription_id
+                == CHECKOUT_SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
             delete(Tenant).where(
                 Tenant.id == CHECKOUT_TENANT_ID
             )
@@ -291,6 +313,12 @@ def test_checkout_completed_upgrades_tenant_to_pro(
                 Tenant,
                 CHECKOUT_TENANT_ID,
             )
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == CHECKOUT_SUBSCRIPTION_ID
+                )
+            )
 
             assert tenant is not None
             assert tenant.plan == PlanName.PRO
@@ -299,12 +327,24 @@ def test_checkout_completed_upgrades_tenant_to_pro(
                 tenant.stripe_customer_id
                 == CHECKOUT_CUSTOMER_ID
             )
+
+            assert subscription is not None
+            assert subscription.tenant_id == CHECKOUT_TENANT_ID
+            assert subscription.status == SubscriptionStatus.ACTIVE
+            assert subscription.plan_name == PlanName.PRO
+            assert subscription.last_stripe_event_created > 0
     finally:
         with SessionLocal() as db:
             db.execute(
                 delete(ProcessedWebhookEvent).where(
                     ProcessedWebhookEvent.stripe_event_id
                     == CHECKOUT_EVENT_ID
+                )
+            )
+            db.execute(
+                delete(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == CHECKOUT_SUBSCRIPTION_ID
                 )
             )
             db.execute(
@@ -439,6 +479,141 @@ def test_subscription_lifecycle_updates_tenant_and_record(
             db.execute(
                 delete(Tenant).where(
                     Tenant.id == SUBSCRIPTION_TENANT_ID
+                )
+            )
+            db.commit()
+
+
+def test_stale_subscription_event_cannot_resurrect_canceled_tenant(
+    webhook_client: TestClient,
+) -> None:
+    with SessionLocal() as db:
+        db.execute(
+            delete(ProcessedWebhookEvent).where(
+                ProcessedWebhookEvent.stripe_event_id.in_(
+                    ORDERING_EVENT_IDS
+                )
+            )
+        )
+        db.execute(
+            delete(Subscription).where(
+                Subscription.stripe_subscription_id
+                == ORDERING_SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
+            delete(Tenant).where(
+                Tenant.id == ORDERING_TENANT_ID
+            )
+        )
+        db.add(
+            Tenant(
+                id=ORDERING_TENANT_ID,
+                email="ordering-test@example.com",
+                plan=PlanName.FREE,
+                status=TenantStatus.ACTIVE,
+            )
+        )
+        db.commit()
+
+    try:
+        events = [
+            (
+                ORDERING_EVENT_IDS[0],
+                "customer.subscription.created",
+                "active",
+                2_000_000_000,
+            ),
+            (
+                ORDERING_EVENT_IDS[1],
+                "customer.subscription.deleted",
+                "active",
+                2_000_000_200,
+            ),
+            (
+                ORDERING_EVENT_IDS[2],
+                "customer.subscription.updated",
+                "active",
+                2_000_000_100,
+            ),
+        ]
+
+        for event_id, event_type, status, created in events:
+            payload = build_subscription_payload(
+                event_id=event_id,
+                event_type=event_type,
+                status=status,
+                created=created,
+                tenant_id=ORDERING_TENANT_ID,
+                customer_id=ORDERING_CUSTOMER_ID,
+                subscription_id=ORDERING_SUBSCRIPTION_ID,
+            )
+
+            response = webhook_client.post(
+                "/webhooks/stripe",
+                content=payload,
+                headers={
+                    "Stripe-Signature": sign_payload(payload),
+                    "Content-Type": "application/json",
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json()["duplicate"] is False
+
+        with SessionLocal() as db:
+            tenant = db.get(
+                Tenant,
+                ORDERING_TENANT_ID,
+            )
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == ORDERING_SUBSCRIPTION_ID
+                )
+            )
+            processed_count = db.scalar(
+                select(
+                    func.count(ProcessedWebhookEvent.id)
+                ).where(
+                    ProcessedWebhookEvent.stripe_event_id.in_(
+                        ORDERING_EVENT_IDS
+                    )
+                )
+            )
+
+            assert tenant is not None
+            assert tenant.plan == PlanName.FREE
+            assert tenant.status == TenantStatus.CANCELED
+
+            assert subscription is not None
+            assert (
+                subscription.status
+                == SubscriptionStatus.CANCELED
+            )
+            assert (
+                subscription.last_stripe_event_created
+                == 2_000_000_200
+            )
+            assert processed_count == 3
+    finally:
+        with SessionLocal() as db:
+            db.execute(
+                delete(ProcessedWebhookEvent).where(
+                    ProcessedWebhookEvent.stripe_event_id.in_(
+                        ORDERING_EVENT_IDS
+                    )
+                )
+            )
+            db.execute(
+                delete(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == ORDERING_SUBSCRIPTION_ID
+                )
+            )
+            db.execute(
+                delete(Tenant).where(
+                    Tenant.id == ORDERING_TENANT_ID
                 )
             )
             db.commit()

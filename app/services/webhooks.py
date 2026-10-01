@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-
+import time
 import stripe
 from sqlalchemy.orm import Session
 
@@ -45,10 +45,26 @@ def _parse_tenant_id(value: Any) -> int:
 
     return tenant_id
 
+def _parse_event_created(value: Any) -> int:
+    try:
+        event_created = int(value)
+    except (TypeError, ValueError) as error:
+        raise InvalidWebhookPayloadError(
+            "The Stripe event has an invalid created timestamp"
+        ) from error
+
+    if event_created < 0:
+        raise InvalidWebhookPayloadError(
+            "The Stripe event has an invalid created timestamp"
+        )
+
+    return event_created
 
 def _handle_checkout_completed(
     db: Session,
-    session: Any,
+    session: dict[str, Any],
+    *,
+    stripe_event_created: int,
 ) -> None:
     if session.get("mode") != "subscription":
         return
@@ -71,18 +87,52 @@ def _handle_checkout_completed(
         )
 
     stripe_customer_id = session.get("customer")
+    stripe_subscription_id = session.get("subscription")
 
     if not isinstance(stripe_customer_id, str):
         raise InvalidWebhookPayloadError(
             "The Checkout Session does not contain a customer ID"
         )
 
-    stripe_subscription_id = session.get("subscription")
-
     if not isinstance(stripe_subscription_id, str):
         raise InvalidWebhookPayloadError(
             "The Checkout Session does not contain a subscription ID"
         )
+
+    existing = subscriptions_repository.get_by_stripe_id(
+        db,
+        stripe_subscription_id,
+    )
+
+    if existing is not None:
+        if existing.tenant_id != tenant.id:
+            raise InvalidWebhookPayloadError(
+                "The subscription belongs to another tenant"
+            )
+
+        if (
+            existing.stripe_customer_id
+            != stripe_customer_id
+        ):
+            raise InvalidWebhookPayloadError(
+                "The subscription customer does not match"
+            )
+
+        # Subscription events carry more authoritative status.
+        return
+
+    subscriptions_repository.upsert_subscription(
+        db,
+        tenant_id=tenant.id,
+        stripe_subscription_id=stripe_subscription_id,
+        stripe_customer_id=stripe_customer_id,
+        plan_name=PlanName.PRO,
+        status=SubscriptionStatus.ACTIVE,
+        current_period_start=None,
+        current_period_end=None,
+        cancel_at_period_end=False,
+        last_stripe_event_created=stripe_event_created,
+    )
 
     tenant.stripe_customer_id = stripe_customer_id
     tenant.plan = PlanName.PRO
@@ -94,11 +144,13 @@ def _dispatch_event(
     *,
     event_type: str,
     event_object: dict[str, Any],
+    stripe_event_created: int,
 ) -> None:
     if event_type == "checkout.session.completed":
         _handle_checkout_completed(
             db,
             event_object,
+            stripe_event_created=stripe_event_created,
         )
     elif event_type in {
         "customer.subscription.created",
@@ -107,11 +159,13 @@ def _dispatch_event(
         synchronize_subscription(
             db,
             event_object,
+            stripe_event_created=stripe_event_created,
         )
     elif event_type == "customer.subscription.deleted":
         synchronize_subscription(
             db,
             event_object,
+            stripe_event_created=stripe_event_created,
             deleted=True,
         )
 
@@ -165,8 +219,9 @@ def synchronize_subscription(
     db: Session,
     subscription: dict[str, Any],
     *,
+    stripe_event_created: int | None = None,
     deleted: bool = False,
-) -> None:
+) -> bool:
     stripe_subscription_id = subscription.get("id")
     stripe_customer_id = subscription.get("customer")
 
@@ -203,6 +258,24 @@ def synchronize_subscription(
             "The subscription does not match a tenant"
         )
 
+    applied_event_created = (
+        int(time.time())
+        if stripe_event_created is None
+        else stripe_event_created
+    )
+
+    existing = subscriptions_repository.get_by_stripe_id(
+        db,
+        stripe_subscription_id,
+    )
+
+    if (
+        existing is not None
+        and applied_event_created
+        < existing.last_stripe_event_created
+    ):
+        return False
+
     stripe_status = (
         "canceled"
         if deleted
@@ -235,6 +308,7 @@ def synchronize_subscription(
         cancel_at_period_end=bool(
             subscription.get("cancel_at_period_end", False)
         ),
+        last_stripe_event_created=applied_event_created,
     )
 
     tenant.stripe_customer_id = stripe_customer_id
@@ -244,6 +318,7 @@ def synchronize_subscription(
         tenant.plan = PlanName.FREE
     else:
         tenant.plan = PlanName.PRO
+    return True
 
 
 def process_webhook(
@@ -272,6 +347,9 @@ def process_webhook(
 
     event_id = event["id"]
     event_type = event["type"]
+    event_created = _parse_event_created(
+        event["created"]
+    )
 
     claimed = webhook_events.claim_event(
         db,
@@ -292,6 +370,7 @@ def process_webhook(
             db,
             event_type=event_type,
             event_object=event_object,
+            stripe_event_created=event_created,
         )
         db.commit()
     except Exception:

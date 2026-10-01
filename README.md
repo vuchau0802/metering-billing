@@ -11,6 +11,7 @@ Client
   |
   v
 FastAPI HTTP layer
+  |-- X-Tenant-Key authentication on tenant-scoped routes
   |-- POST /generate
   |     -> Metering service
   |     -> Tenant lock and quota check
@@ -56,7 +57,7 @@ All money is an integer count of **micro-USD** (1 USD = 1,000,000 micro-USD). No
 
 | Constant | Value (micro-USD per 1,000 units) | USD |
 |----------|-----------------------------------|-----|
-| `API_CALL_PRICE_PER_1K` | 2,000 | $0.002 / call |
+| `API_CALL_PRICE_PER_1K` | 2,000 | $0.002 / 1,000 calls |
 | `INPUT_PRICE_PER_1K` | 150,000 | $0.15 / 1k tokens |
 | `CACHED_INPUT_PRICE_PER_1K` | 75,000 | $0.075 / 1k tokens |
 | `OUTPUT_PRICE_PER_1K` | 600,000 | $0.60 / 1k tokens |
@@ -89,10 +90,22 @@ alembic upgrade head
 python seed.py
 ```
 
+The seed command provisions development-only API keys for the demo tenants:
+
+| Tenant | `X-Tenant-Key` |
+|--------|----------------|
+| 1 | `dev-tenant-1-key` |
+| 2 | `dev-tenant-2-key` |
+| 3 | `dev-tenant-3-key` |
+| 4 | `dev-tenant-4-key` |
+
+Only SHA-256 hashes of these keys are stored. Replace them when provisioning
+real tenants; the checked-in values are strictly local development fixtures.
+
 Start the API:
 
 ```powershell
-uvicorn app.main:app --reload --port 8004
+python run.py
 ```
 
 The API documentation is available at `http://localhost:8004/docs`.
@@ -100,6 +113,7 @@ The API documentation is available at `http://localhost:8004/docs`.
 Run the test suite:
 
 ```powershell
+python -m compileall app tests run.py
 python -m pytest -q
 ```
 
@@ -127,10 +141,12 @@ API. Create a Checkout Session for a Free tenant:
 
 ```powershell
 $body = @{ tenant_id = 1 } | ConvertTo-Json
+$headers = @{ "X-Tenant-Key" = "dev-tenant-1-key" }
 
 Invoke-RestMethod `
     -Method Post `
     -Uri "http://localhost:8004/billing/checkout" `
+    -Headers $headers `
     -ContentType "application/json" `
     -Body $body
 ```
@@ -170,9 +186,9 @@ Task Scheduler, cron, or a deployment platform's scheduled-job facility.
 ## Limitations
 
 - Stripe integration is test mode only; no real payments are accepted.
-- Authentication and authorization are outside this capstone. A production
-  API must derive the tenant from authenticated identity rather than trusting
-  a request body or path parameter.
+- Tenant-scoped routes use hashed API keys. Production deployment should add
+  key issuance and rotation or derive the tenant from an external identity
+  provider instead of using seeded development keys.
 - Only Free and Pro plans and two usage types are supported.
 - Usage quotas reset by UTC calendar month, independently of Stripe billing
   periods.

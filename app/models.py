@@ -109,6 +109,11 @@ class Tenant(Base):
         unique=True,
         nullable=True,
     )
+    api_key_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -161,6 +166,11 @@ class Subscription(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
+        nullable=False,
+    )
+    last_stripe_event_created: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(

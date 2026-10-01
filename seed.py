@@ -1,6 +1,7 @@
 from app.config import get_settings
 from sqlalchemy.orm import Session
 
+from app.auth import hash_tenant_api_key
 from app.db import SessionLocal
 from app.models import Plan, PlanName, Tenant, TenantStatus
 
@@ -42,24 +43,28 @@ def seed_tenants(db: Session) -> None:
             "email": "alice@example.com",
             "plan": PlanName.FREE,
             "status": TenantStatus.ACTIVE,
+            "api_key_hash": hash_tenant_api_key("dev-tenant-1-key"),
         },
         {
             "id": 2,
             "email": "bob@example.com",
             "plan": PlanName.FREE,
             "status": TenantStatus.ACTIVE,
+            "api_key_hash": hash_tenant_api_key("dev-tenant-2-key"),
         },
         {
             "id": 3,
             "email": "pro@example.com",
             "plan": PlanName.PRO,
             "status": TenantStatus.ACTIVE,
+            "api_key_hash": hash_tenant_api_key("dev-tenant-3-key"),
         },
         {
             "id": 4,
             "email": "past-due@example.com",
             "plan": PlanName.PRO,
             "status": TenantStatus.PAST_DUE,
+            "api_key_hash": hash_tenant_api_key("dev-tenant-4-key"),
         },
     ]
 
@@ -70,8 +75,8 @@ def seed_tenants(db: Session) -> None:
             db.add(Tenant(**data))
         else:
             tenant.email = data["email"]
-            tenant.plan = data["plan"]
-            tenant.status = data["status"]
+            if tenant.api_key_hash is None:
+                tenant.api_key_hash = data["api_key_hash"]
 
 
 def main() -> None:

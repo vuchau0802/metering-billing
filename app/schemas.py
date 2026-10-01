@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import UsageType
 
@@ -9,6 +9,10 @@ from app.models import UsageType
 StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
 StrictNonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 
+class ApiCallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: StrictPositiveInt
 
 class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -18,6 +22,15 @@ class GenerateRequest(BaseModel):
     cached_input_tokens: StrictNonNegativeInt
     output_tokens: StrictNonNegativeInt
     reasoning_tokens: StrictNonNegativeInt
+
+    @model_validator(mode="after")
+    def require_nonzero_usage(self) -> "GenerateRequest":
+        if self.quantity == 0:
+            raise ValueError(
+                "At least one token count must be greater than zero."
+            )
+
+        return self
 
     @property
     def quantity(self) -> int:

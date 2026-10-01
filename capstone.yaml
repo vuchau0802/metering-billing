@@ -1,5 +1,5 @@
 # Evaluator manifest. `run` boots the system, `seed` loads demo data.
-run: uvicorn app.main:app --reload --port 8004
+run: python run.py
 seed: python seed.py
 base_url: http://localhost:8004
 test: python -m pytest -q
@@ -14,5 +14,9 @@ endpoints:
 
 # Demo tenants created by `seed` (free tier, for driving the quota boundary).
 seed_tenants:
-  free_alice: 1
-  free_bob: 2
+  free_alice:
+    id: 1
+    x_tenant_key: dev-tenant-1-key
+  free_bob:
+    id: 2
+    x_tenant_key: dev-tenant-2-key

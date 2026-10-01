@@ -67,3 +67,16 @@ def test_generate_request_requires_positive_tenant_id() -> None:
 
     with pytest.raises(ValidationError):
         GenerateRequest(**data)
+
+
+def test_generate_request_rejects_zero_total_usage() -> None:
+    data = {
+        "tenant_id": 1,
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+    with pytest.raises(ValidationError):
+        GenerateRequest(**data)

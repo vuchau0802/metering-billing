@@ -19,6 +19,7 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 - `plan` (enum: `free` | `pro`) — **denormalized mirror** of the active subscription's plan, written *only* by the webhook handler. Kept on the tenant row because the quota check runs on every billable request and should not need a join to answer "what is this tenant entitled to?"
 - `status` (enum: `active` | `past_due` | `canceled` | `incomplete`) — mirror of Stripe subscription status. `free` tenants sit at `active`.
 - `stripe_customer_id` (nullable, unique — set the first time the tenant touches Stripe)
+- `api_key_hash` (nullable, unique SHA-256 digest — tenant-scoped routes compare the supplied `X-Tenant-Key` without storing the raw credential)
 - `created_at`, `updated_at`
 
 **`plans`** (reference/config table — a table rather than a Python dict so limits are inspectable and adjustable without a deploy)
@@ -69,7 +70,7 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 Integer micro-USD, per 1,000 units. Pinned in config (`config.py`), never hardcoded at a call site.
 
 ```
-API_CALL_PRICE_PER_1K       =   2_000   # $0.002 per API call
+API_CALL_PRICE_PER_1K       =   2_000   # $0.002 per 1,000 API calls
 INPUT_PRICE_PER_1K          = 150_000   # $0.15  per 1k input tokens
 CACHED_INPUT_PRICE_PER_1K  =  75_000   # $0.075 per 1k cached input tokens (half of input)
 OUTPUT_PRICE_PER_1K         = 600_000   # $0.60  per 1k output tokens
@@ -93,10 +94,10 @@ ai_tokens event:
                           * OUTPUT_PRICE_PER_1K            // 1000     # reasoning bills as output
 ```
 
-Two rules make double-counting structurally impossible:
+Two rules keep the token accounting explicit:
 
-1. **`reasoning_tokens` is a sibling of `output_tokens`, not a subset.** A caller must not include reasoning tokens inside `output_tokens`. The server rejects the request with `400 invalid_token_breakdown` if it cannot tell which was meant.
-2. **The breakdown must reconcile with the total.** The server validates `quantity == input + cached_input + output + reasoning` and that every component is a non-negative integer. A mismatch is a `400`, never a silently-wrong bill.
+1. **`reasoning_tokens` is a sibling of `output_tokens`, not a subset.** Callers provide each token category separately so each category is priced once.
+2. **The server derives the total.** Clients do not provide `quantity`; the server calculates it from the four token components. Every component must be a strict, non-negative integer, otherwise the request returns `400 invalid_request`.
 
 ### Rounding
 
@@ -106,7 +107,8 @@ All money is integer micro-USD; the only arithmetic is `value * price_per_1k // 
 
 ```
 POST /generate                     the one dummy billable endpoint
-  Headers:  Idempotency-Key: <client-generated UUID>
+  Headers:  X-Tenant-Key: <tenant credential>
+            Idempotency-Key: <client-generated UUID>
   Body:     { "tenant_id": int,
               "input_tokens": int, "cached_input_tokens": int,
               "output_tokens": int, "reasoning_tokens": int }
@@ -114,50 +116,51 @@ POST /generate                     the one dummy billable endpoint
               "usage": { "used", "limit", "remaining" } }
             + header `Idempotent-Replay: true` on a replay
 
-GET  /usage/{tenant_id}            -> { "window", "usage": { per-type used/limit/remaining },
+GET  /usage/{tenant_id}            requires X-Tenant-Key, then returns
+                                      { "window", "usage": { per-type used/limit/remaining },
                                         "cost_microusd" }  rollup for the current window
 
-POST /billing/checkout            -> creates a Stripe Checkout session (test mode)
+POST /billing/checkout            requires X-Tenant-Key, then creates a Stripe Checkout session
 POST /webhooks/stripe             -> verify signature, dedup by stripe_event_id, sync plan/status
 ```
 
 ### `POST /generate` flow
 
 ```
-1. Validate the body. Non-integer / negative / non-reconciling token counts -> 400.
-2. Look up usage_events by idempotency_key.
+1. Authenticate `X-Tenant-Key` against the requested tenant -> 401 on failure.
+2. Validate the body. Non-integer, negative, or all-zero token counts -> 400.
+3. Look up usage_events by idempotency_key.
    - Found  -> return the stored response_snapshot verbatim, with `Idempotent-Replay: true`.
                No quota check, no insert, no side effects at all.
    - Missing -> continue.
-3. Entitlement check (may this tenant act at all?):
-   - tenant.status != 'active'                        -> 402 payment_required
-   - action not permitted by the tenant's plan tier    -> 402 payment_required
-4. Quota check, per usage type, inside one transaction:
+4. Entitlement check (may this tenant act at all?):
+   - tenant.status != 'active' -> 402 payment_required
+5. Quota check, per usage type, inside one transaction:
    used = SUM(quantity) for this tenant + type + window
    if used + requested > limit  -> 429 quota_exceeded
    (so used + requested == limit is ALLOWED: a tenant may reach exactly
     its limit and the next request is the one refused)
-5. INSERT usage_event (quantity, frozen cost_microusd, response_snapshot).
+6. INSERT usage_event (quantity, frozen cost_microusd, response_snapshot).
    The UNIQUE constraint on idempotency_key is the final safety net even
    against a race between step 2's read and this insert: a losing
    transaction catches IntegrityError, re-reads the winning row, and
    returns its response_snapshot — so two concurrent retries still
    produce exactly one event and two identical responses.
-6. Commit, return the snapshot with `Idempotent-Replay` absent.
+7. Commit, return the snapshot with `Idempotent-Replay` absent.
 ```
 
 ### `429` vs `402` — the exact rule
 
 | Code | Meaning | Trigger |
 |------|---------|---------|
-| `402 payment_required` | The tenant is not entitled to act. No amount of waiting helps. | `tenant.status` is `past_due` / `canceled` / `incomplete`, or the action requires a plan tier the tenant does not hold |
+| `402 payment_required` | The tenant is not entitled to act. No amount of waiting helps. | `tenant.status` is `past_due`, `canceled`, or `incomplete` |
 | `429 quota_exceeded` | The tenant is on a valid, paid plan but has spent this window's metered allowance. It resets. | `used + requested > limit` for the usage type |
 
 Every error body is machine-readable and explains itself:
 
 ```json
 { "error": { "code": "quota_exceeded",
-             "message": "AI token quota exceeded for the current billing period.",
+             "message": "ai tokens quota exceeded for the current UTC month.",
              "usage_type": "ai_tokens",
              "used": 100000, "limit": 100000, "requested": 2500,
              "resets_at": "2026-10-01T00:00:00Z" } }

@@ -8,6 +8,7 @@ from app.models import TenantStatus, UsageEvent, UsageType
 from app.repositories import tenants as tenants_repository
 from app.repositories import usage_events as usage_events_repository
 from app.schemas import (
+    ApiCallRequest,
     GenerateRequest,
     GenerateResponse,
     QuotaUsage,
@@ -15,7 +16,10 @@ from app.schemas import (
     UsageResponse,
     UsageWindow,
 )
-from app.services.costs import calculate_ai_token_cost
+from app.services.costs import (
+    calculate_ai_token_cost,
+    calculate_api_call_cost,
+)
 from app.services.quotas import check_quota, current_utc_month
 
 
@@ -56,22 +60,38 @@ class MeteringResult:
 
 def _event_matches_request(
     event: UsageEvent,
-    request: GenerateRequest,
+    *,
+    tenant_id: int,
+    usage_type: UsageType,
+    quantity: int,
+    token_breakdown: dict[str, int] | None,
 ) -> bool:
     return (
-        event.tenant_id == request.tenant_id
-        and event.usage_type == UsageType.AI_TOKENS
-        and event.quantity == request.quantity
-        and event.token_breakdown == request.token_breakdown
+        event.tenant_id == tenant_id
+        and event.usage_type == usage_type
+        and event.quantity == quantity
+        and event.token_breakdown == token_breakdown
     )
 
 
 def _replay_existing_event(
     event: UsageEvent,
-    request: GenerateRequest,
+    *,
+    tenant_id: int,
+    usage_type: UsageType,
+    quantity: int,
+    token_breakdown: dict[str, int] | None,
 ) -> MeteringResult:
-    if not _event_matches_request(event, request):
-        raise IdempotencyConflictError(event.idempotency_key)
+    if not _event_matches_request(
+        event,
+        tenant_id=tenant_id,
+        usage_type=usage_type,
+        quantity=quantity,
+        token_breakdown=token_breakdown,
+    ):
+        raise IdempotencyConflictError(
+            event.idempotency_key
+        )
 
     return MeteringResult(
         response=dict(event.response_snapshot),
@@ -79,10 +99,14 @@ def _replay_existing_event(
     )
 
 
-def record_generate(
+def _record_usage(
     db: Session,
     *,
-    request: GenerateRequest,
+    tenant_id: int,
+    usage_type: UsageType,
+    quantity: int,
+    token_breakdown: dict[str, int] | None,
+    cost_microusd: int,
     idempotency_key: str,
 ) -> MeteringResult:
     existing = usage_events_repository.get_by_idempotency_key(
@@ -91,29 +115,41 @@ def record_generate(
     )
 
     if existing is not None:
-        return _replay_existing_event(existing, request)
+        return _replay_existing_event(
+            existing,
+            tenant_id=tenant_id,
+            usage_type=usage_type,
+            quantity=quantity,
+            token_breakdown=token_breakdown,
+        )
 
     tenant_record = (
         tenants_repository.get_tenant_with_plan_for_update(
             db,
-            request.tenant_id,
+            tenant_id,
         )
     )
 
     if tenant_record is None:
-        raise TenantNotFoundError(request.tenant_id)
+        raise TenantNotFoundError(tenant_id)
 
     tenant, plan = tenant_record
 
-    # A second request may have waited for the tenant lock.
-    # Recheck after acquiring it before creating any side effect.
+    # Recheck after acquiring the tenant lock because another
+    # request may have completed while this request waited.
     existing = usage_events_repository.get_by_idempotency_key(
         db,
         idempotency_key,
     )
 
     if existing is not None:
-        return _replay_existing_event(existing, request)
+        return _replay_existing_event(
+            existing,
+            tenant_id=tenant_id,
+            usage_type=usage_type,
+            quantity=quantity,
+            token_breakdown=token_breakdown,
+        )
 
     if tenant.status != TenantStatus.ACTIVE:
         raise PaymentRequiredError(
@@ -125,15 +161,8 @@ def record_generate(
         db,
         tenant_id=tenant.id,
         plan=plan,
-        usage_type=UsageType.AI_TOKENS,
-        requested=request.quantity,
-    )
-
-    cost_microusd = calculate_ai_token_cost(
-        input_tokens=request.input_tokens,
-        cached_input_tokens=request.cached_input_tokens,
-        output_tokens=request.output_tokens,
-        reasoning_tokens=request.reasoning_tokens,
+        usage_type=usage_type,
+        requested=quantity,
     )
 
     try:
@@ -141,9 +170,9 @@ def record_generate(
             db,
             tenant_id=tenant.id,
             idempotency_key=idempotency_key,
-            usage_type=UsageType.AI_TOKENS,
-            quantity=request.quantity,
-            token_breakdown=request.token_breakdown,
+            usage_type=usage_type,
+            quantity=quantity,
+            token_breakdown=token_breakdown,
             cost_microusd=cost_microusd,
             response_snapshot={},
         )
@@ -151,7 +180,7 @@ def record_generate(
         response = GenerateResponse(
             usage_event_id=event.id,
             idempotency_key=idempotency_key,
-            quantity=request.quantity,
+            quantity=quantity,
             cost_microusd=cost_microusd,
             usage=QuotaUsage(
                 used=quota.used,
@@ -167,19 +196,70 @@ def record_generate(
             response=response,
             replayed=False,
         )
-
     except IntegrityError:
         db.rollback()
 
-        existing = usage_events_repository.get_by_idempotency_key(
-            db,
-            idempotency_key,
+        existing = (
+            usage_events_repository
+            .get_by_idempotency_key(
+                db,
+                idempotency_key,
+            )
         )
 
         if existing is None:
             raise
 
-        return _replay_existing_event(existing, request)
+        return _replay_existing_event(
+            existing,
+            tenant_id=tenant_id,
+            usage_type=usage_type,
+            quantity=quantity,
+            token_breakdown=token_breakdown,
+        )
+
+
+def record_generate(
+    db: Session,
+    *,
+    request: GenerateRequest,
+    idempotency_key: str,
+) -> MeteringResult:
+    cost_microusd = calculate_ai_token_cost(
+        input_tokens=request.input_tokens,
+        cached_input_tokens=request.cached_input_tokens,
+        output_tokens=request.output_tokens,
+        reasoning_tokens=request.reasoning_tokens,
+    )
+
+    return _record_usage(
+        db,
+        tenant_id=request.tenant_id,
+        usage_type=UsageType.AI_TOKENS,
+        quantity=request.quantity,
+        token_breakdown=request.token_breakdown,
+        cost_microusd=cost_microusd,
+        idempotency_key=idempotency_key,
+    )
+
+
+def record_api_call(
+    db: Session,
+    *,
+    request: ApiCallRequest,
+    idempotency_key: str,
+) -> MeteringResult:
+    quantity = 1
+
+    return _record_usage(
+        db,
+        tenant_id=request.tenant_id,
+        usage_type=UsageType.API_CALL,
+        quantity=quantity,
+        token_breakdown=None,
+        cost_microusd=calculate_api_call_cost(quantity),
+        idempotency_key=idempotency_key,
+    )
 
 def get_usage_report(
     db: Session,

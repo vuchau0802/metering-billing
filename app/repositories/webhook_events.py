@@ -21,17 +21,16 @@ def claim_event(
     if existing is not None:
         return False
 
-    db.add(
-        ProcessedWebhookEvent(
-            stripe_event_id=stripe_event_id,
-            event_type=event_type,
-        )
-    )
-
     try:
-        db.flush()
+        with db.begin_nested():
+            db.add(
+                ProcessedWebhookEvent(
+                    stripe_event_id=stripe_event_id,
+                    event_type=event_type,
+                )
+            )
+            db.flush()
     except IntegrityError:
-        db.rollback()
         return False
 
     return True

@@ -7,8 +7,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.auth import (
+    TenantAuthenticationError,
+    require_tenant_access,
+)
 from app.db import get_db
 from app.schemas import (
+    ApiCallRequest,
     BillingRedirectResponse,
     CheckoutRequest,
     CheckoutResponse,
@@ -22,6 +27,7 @@ from app.services.metering import (
     PaymentRequiredError,
     TenantNotFoundError,
     get_usage_report,
+    record_api_call,
     record_generate,
 )
 from app.services.billing import (
@@ -37,11 +43,37 @@ from app.services.webhooks import (
 )
 from app.services.quotas import QuotaExceededError
 
+IdempotencyKey = Annotated[
+    str,
+    Header(
+        alias="Idempotency-Key",
+        min_length=1,
+        max_length=255,
+        pattern=r".*\S.*",
+    ),
+]
+TenantApiKey = Annotated[
+    str | None,
+    Header(
+        alias="X-Tenant-Key",
+        max_length=255,
+    ),
+]
 
 app = FastAPI(
     title="Usage Metering and Billing Engine",
     version="0.1.0",
 )
+
+
+async def read_raw_request_body(request: Request) -> bytes:
+    return await request.body()
+
+
+RawRequestBody = Annotated[
+    bytes,
+    Depends(read_raw_request_body),
+]
 
 
 @app.exception_handler(RequestValidationError)
@@ -71,6 +103,22 @@ async def handle_tenant_not_found(
             "error": {
                 "code": "tenant_not_found",
                 "message": f"Tenant {error.tenant_id} was not found.",
+            }
+        },
+    )
+
+
+@app.exception_handler(TenantAuthenticationError)
+async def handle_tenant_authentication_error(
+    request: Request,
+    error: TenantAuthenticationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": {
+                "code": "unauthorized",
+                "message": str(error),
             }
         },
     )
@@ -142,7 +190,8 @@ async def handle_quota_exceeded(
             "error": {
                 "code": "quota_exceeded",
                 "message": (
-                    "AI token quota exceeded for the current UTC month."
+                    f"{error.usage_type.value.replace('_', ' ')} "
+                    "quota exceeded for the current UTC month."
                 ),
                 "usage_type": error.usage_type.value,
                 "used": error.used,
@@ -244,8 +293,14 @@ def health() -> dict[str, str]:
 )
 def usage(
     tenant_id: int,
+    tenant_api_key: TenantApiKey = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    require_tenant_access(
+        db,
+        tenant_id=tenant_id,
+        api_key=tenant_api_key,
+    )
     return get_usage_report(db, tenant_id)
 
 @app.post(
@@ -255,18 +310,44 @@ def usage(
 def generate(
     payload: GenerateRequest,
     response: Response,
-    idempotency_key: Annotated[
-        str,
-        Header(
-            alias="Idempotency-Key",
-            min_length=1,
-            max_length=255,
-            pattern=r".*\S.*",
-        ),
-    ],
+    idempotency_key: IdempotencyKey,
+    tenant_api_key: TenantApiKey = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    require_tenant_access(
+        db,
+        tenant_id=payload.tenant_id,
+        api_key=tenant_api_key,
+    )
     result = record_generate(
+        db,
+        request=payload,
+        idempotency_key=idempotency_key,
+    )
+
+    if result.replayed:
+        response.headers["Idempotent-Replay"] = "true"
+
+    return result.response
+
+
+@app.post(
+    "/api-call",
+    response_model=GenerateResponse,
+)
+def api_call(
+    payload: ApiCallRequest,
+    response: Response,
+    idempotency_key: IdempotencyKey,
+    tenant_api_key: TenantApiKey = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_tenant_access(
+        db,
+        tenant_id=payload.tenant_id,
+        api_key=tenant_api_key,
+    )
+    result = record_api_call(
         db,
         request=payload,
         idempotency_key=idempotency_key,
@@ -283,8 +364,14 @@ def generate(
 )
 def billing_checkout(
     payload: CheckoutRequest,
+    tenant_api_key: TenantApiKey = None,
     db: Session = Depends(get_db),
 ) -> CheckoutResponse:
+    require_tenant_access(
+        db,
+        tenant_id=payload.tenant_id,
+        api_key=tenant_api_key,
+    )
     return create_checkout_session(
         db,
         payload.tenant_id,
@@ -294,16 +381,14 @@ def billing_checkout(
     "/webhooks/stripe",
     response_model=WebhookResponse,
 )
-async def stripe_webhook(
-    request: Request,
+def stripe_webhook(
+    payload: RawRequestBody,
     stripe_signature: Annotated[
         str,
         Header(alias="Stripe-Signature"),
     ],
     db: Session = Depends(get_db),
 ) -> WebhookResponse:
-    payload = await request.body()
-
     result = process_webhook(
         db,
         payload=payload,

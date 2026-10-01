@@ -33,6 +33,7 @@ def upsert_subscription(
     current_period_start: datetime | None,
     current_period_end: datetime | None,
     cancel_at_period_end: bool,
+    last_stripe_event_created: int,
 ) -> Subscription:
     subscription = get_by_stripe_id(
         db,
@@ -49,6 +50,7 @@ def upsert_subscription(
             current_period_start=current_period_start,
             current_period_end=current_period_end,
             cancel_at_period_end=cancel_at_period_end,
+            last_stripe_event_created=last_stripe_event_created,
         )
         db.add(subscription)
     else:
@@ -59,7 +61,7 @@ def upsert_subscription(
         subscription.current_period_start = current_period_start
         subscription.current_period_end = current_period_end
         subscription.cancel_at_period_end = cancel_at_period_end
-
+        subscription.last_stripe_event_created = last_stripe_event_created
     return subscription
 
 def list_reconcilable_ids(
