@@ -1,8 +1,13 @@
+from datetime import datetime, timezone
+
 import pytest
 
+from app.models import UsageType
 from app.services.costs import (
     calculate_ai_token_cost,
     calculate_api_call_cost,
+    calculate_overage_cost,
+    calculate_projected_monthly_cost,
 )
 
 
@@ -75,3 +80,40 @@ def test_ai_token_cost_rejects_negative_component() -> None:
 def test_cost_rejects_boolean_as_integer() -> None:
     with pytest.raises(TypeError, match="must be an integer"):
         calculate_api_call_cost(True)
+
+
+@pytest.mark.parametrize(
+    ("usage_type", "quantity", "expected"),
+    [
+        (UsageType.API_CALL, 1_000, 3_000),
+        (UsageType.AI_TOKENS, 1_000, 750_000),
+    ],
+)
+def test_calculate_overage_cost(
+    usage_type: UsageType,
+    quantity: int,
+    expected: int,
+) -> None:
+    assert calculate_overage_cost(usage_type, quantity) == expected
+
+
+def test_overage_cost_rejects_negative_quantity() -> None:
+    with pytest.raises(ValueError, match="must be non-negative"):
+        calculate_overage_cost(UsageType.AI_TOKENS, -1)
+
+
+def test_projected_monthly_cost_scales_elapsed_usage() -> None:
+    projected = calculate_projected_monthly_cost(
+        1_000_000,
+        window_start=datetime(
+            2026, 10, 1, tzinfo=timezone.utc
+        ),
+        window_end=datetime(
+            2026, 11, 1, tzinfo=timezone.utc
+        ),
+        now=datetime(
+            2026, 10, 16, 12, tzinfo=timezone.utc
+        ),
+    )
+
+    assert projected == 2_000_000

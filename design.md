@@ -26,6 +26,7 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 - `name` (PK: `free` | `pro`)
 - `api_calls_limit` (int, per quota window)
 - `ai_tokens_limit` (int, per quota window)
+- `overage_enabled` (bool — Free remains hard-capped; Pro may continue beyond quota)
 - `stripe_price_id` (nullable, unique — the Stripe Price this plan bills to; drives Checkout)
 
 **`subscriptions`** (the ledger — one row per Stripe subscription, kept for history)
@@ -46,6 +47,8 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 - `usage_type` (enum: `api_call` | `ai_tokens`)
 - `quantity` (int — call count, or total token count)
 - `token_breakdown` (JSONB, nullable — only for `ai_tokens` events: `{input, cached_input, output, reasoning}`; **null** for `api_call` events)
+- `overage_quantity` (int — over-quota units introduced by this event)
+- `overage_cost_microusd` (bigint — the event's frozen overage surcharge)
 - `cost_microusd` (bigint, **not null** — the event's cost frozen at write time, so changing a pinned price later never rewrites historical bills)
 - `response_snapshot` (JSONB, **not null** — the exact response body returned the first time, so an idempotent replay is byte-identical)
 - `created_at` (indexed — rollups filter by quota window)
@@ -58,10 +61,10 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 
 ## Plans & quotas
 
-| Plan | API calls / window | AI tokens / window |
-|------|--------------------|--------------------|
-| Free | 1,000 | 100,000 |
-| Pro  | 50,000 | 5,000,000 |
+| Plan | API calls / window | AI tokens / window | Overage |
+|------|--------------------|--------------------|---------|
+| Free | 1,000 | 100,000 | Disabled |
+| Pro  | 50,000 | 5,000,000 | Enabled |
 
 **Quota window = UTC calendar month** (`created_at >= first_of_month 00:00:00Z` AND `< first_of_next_month 00:00:00Z`). Deliberately *not* the Stripe billing period: a calendar month keeps the rollup a single indexed range scan, and mid-cycle plan changes are out of core scope. The tradeoff is that an upgrade mid-month does not reset the window — that is a documented simplification, and proration/billing-period-aligned quotas are the stretch goal that revisits it.
 
@@ -74,6 +77,8 @@ API_CALL_PRICE_PER_1K       =   2_000   # $0.002 per 1,000 API calls
 INPUT_PRICE_PER_1K          = 150_000   # $0.15  per 1k input tokens
 CACHED_INPUT_PRICE_PER_1K  =  75_000   # $0.075 per 1k cached input tokens (half of input)
 OUTPUT_PRICE_PER_1K         = 600_000   # $0.60  per 1k output tokens
+API_CALL_OVERAGE_PRICE_PER_1K = 3_000   # $0.003 per 1k overage calls
+AI_TOKEN_OVERAGE_PRICE_PER_1K = 750_000 # $0.75 per 1k overage tokens
 # reasoning tokens bill at the OUTPUT rate — there is no separate reasoning price
 ```
 
@@ -137,7 +142,9 @@ POST /webhooks/stripe             -> verify signature, dedup by stripe_event_id,
    - tenant.status != 'active' -> 402 payment_required
 5. Quota check, per usage type, inside one transaction:
    used = SUM(quantity) for this tenant + type + window
-   if used + requested > limit  -> 429 quota_exceeded
+   new_overage = max(0, used + requested - limit) - max(0, used - limit)
+   if new_overage > 0 and overage is disabled -> 429 quota_exceeded
+   if new_overage > 0 and overage is enabled  -> accept and add the surcharge
    (so used + requested == limit is ALLOWED: a tenant may reach exactly
     its limit and the next request is the one refused)
 6. INSERT usage_event (quantity, frozen cost_microusd, response_snapshot).
@@ -193,6 +200,19 @@ Background worker (separate process, not a request-path thread)
       webhook that never arrived. Retries with backoff; failures are logged and alerted.
 ```
 
+## Overage projection
+
+The usage report projects month-end cost from the current frozen total:
+
+```text
+projected_cost = current_cost * total_month_seconds // elapsed_month_seconds
+```
+
+The projection never falls below actual cost. It is informational and does
+not rewrite historical usage events or their idempotent response snapshots.
+
 ## Explicit non-goal
 
-**No overage billing, invoicing, or proration in the core.** A request over quota is simply rejected (`429`/`402`) — there is no "let it through and bill extra later" logic. These are listed as stretch goals in the brief and are explicitly out of scope for the core build.
+**Invoicing and proration remain out of scope.** Overage charges are measured
+and reported, but this service does not create invoices, prorate subscriptions,
+issue refunds, or calculate tax.

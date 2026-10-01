@@ -48,6 +48,8 @@ def create_usage_event(
     token_breakdown: dict[str, int] | None,
     cost_microusd: int,
     response_snapshot: dict[str, Any],
+    overage_quantity: int,
+    overage_cost_microusd: int,
 ) -> UsageEvent:
     event = UsageEvent(
         tenant_id=tenant_id,
@@ -55,6 +57,8 @@ def create_usage_event(
         usage_type=usage_type,
         quantity=quantity,
         token_breakdown=token_breakdown,
+        overage_quantity=overage_quantity,
+        overage_cost_microusd=overage_cost_microusd,
         cost_microusd=cost_microusd,
         response_snapshot=response_snapshot,
     )
@@ -70,12 +74,13 @@ def get_usage_rollup(
     tenant_id: int,
     window_start: datetime,
     window_end: datetime,
-) -> tuple[dict[UsageType, int], int]:
+) -> tuple[dict[UsageType, int], int, int]:
     statement = (
         select(
             UsageEvent.usage_type,
             func.sum(UsageEvent.quantity),
             func.sum(UsageEvent.cost_microusd),
+            func.sum(UsageEvent.overage_cost_microusd),
         )
         .where(
             UsageEvent.tenant_id == tenant_id,
@@ -90,9 +95,17 @@ def get_usage_rollup(
         UsageType.AI_TOKENS: 0,
     }
     total_cost_microusd = 0
+    total_overage_cost_microusd = 0
 
-    for usage_type, quantity, cost in db.execute(statement):
+    for usage_type, quantity, cost, overage_cost in db.execute(
+        statement
+    ):
         totals[usage_type] = int(quantity or 0)
         total_cost_microusd += int(cost or 0)
+        total_overage_cost_microusd += int(overage_cost or 0)
 
-    return totals, total_cost_microusd
+    return (
+        totals,
+        total_cost_microusd,
+        total_overage_cost_microusd,
+    )

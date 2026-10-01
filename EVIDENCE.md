@@ -256,3 +256,27 @@ Date verified: 2026-09-30
 Command: `python -m pytest -q`
 
 Result: `48 passed, 1 warning in 1.47s`
+
+---
+
+## Overage Billing Evidence
+
+Date verified: 2026-10-01
+
+A Pro tenant with 4,999,900 of 5,000,000 AI tokens used submitted another
+200-token request.
+
+Observed:
+
+- Request accepted with HTTP 200.
+- Final usage: 5,000,100 tokens.
+- Overage quantity: 100 tokens.
+- Overage surcharge: 75,000 micro-USD.
+- Event total: 105,000 micro-USD.
+- Replaying the same idempotency key returned the identical response.
+- Exactly one usage event was stored.
+- `/usage` reported the same cumulative overage and surcharge.
+
+Command: `python -m pytest -q`
+
+Result: `55 passed in 1.28s`

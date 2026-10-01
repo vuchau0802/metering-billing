@@ -55,7 +55,7 @@ class QuotaUsage(BaseModel):
     used: StrictNonNegativeInt
     limit: StrictNonNegativeInt
     remaining: StrictNonNegativeInt
-
+    overage: StrictNonNegativeInt
 
 class GenerateResponse(BaseModel):
     usage_event_id: StrictPositiveInt
@@ -63,6 +63,9 @@ class GenerateResponse(BaseModel):
     quantity: StrictNonNegativeInt
     cost_microusd: StrictNonNegativeInt
     usage: QuotaUsage
+    overage_quantity: StrictNonNegativeInt
+    overage_cost_microusd: StrictNonNegativeInt
+    projected_cost_microusd: StrictNonNegativeInt
 
 
 class UsageWindow(BaseModel):
@@ -80,7 +83,9 @@ class UsageResponse(BaseModel):
     window: UsageWindow
     usage: UsageByType
     cost_microusd: StrictNonNegativeInt
-
+    overage_enabled: bool
+    overage_cost_microusd: StrictNonNegativeInt
+    projected_cost_microusd: StrictNonNegativeInt
 
 class ErrorDetail(BaseModel):
     code: str

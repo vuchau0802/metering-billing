@@ -78,6 +78,11 @@ class Plan(Base):
     name: Mapped[PlanName] = mapped_column(plan_name_type, primary_key=True)
     api_calls_limit: Mapped[int] = mapped_column(Integer, nullable=False)
     ai_tokens_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    overage_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
     stripe_price_id: Mapped[str | None] = mapped_column(
         String(255),
         unique=True,
@@ -216,6 +221,16 @@ class UsageEvent(Base):
     token_breakdown: Mapped[dict[str, int] | None] = mapped_column(
         JSONB,
         nullable=True,
+    )
+    overage_quantity: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    overage_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        nullable=False,
     )
     cost_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
     response_snapshot: Mapped[dict[str, Any]] = mapped_column(

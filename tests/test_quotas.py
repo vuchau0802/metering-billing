@@ -6,11 +6,15 @@ from app.models import Plan, PlanName, UsageType
 from app.services import quotas
 
 
-def make_plan() -> Plan:
+def make_plan(
+    *,
+    overage_enabled: bool = False,
+) -> Plan:
     return Plan(
         name=PlanName.FREE,
         api_calls_limit=10,
         ai_tokens_limit=100,
+        overage_enabled=overage_enabled,
         stripe_price_id=None,
     )
 
@@ -59,7 +63,8 @@ def test_exact_quota_limit_is_allowed(monkeypatch) -> None:
     assert result.used == 100
     assert result.limit == 100
     assert result.remaining == 0
-
+    assert result.overage == 0
+    assert result.new_overage == 0
 
 def test_request_past_quota_is_rejected(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -100,7 +105,8 @@ def test_api_calls_use_api_call_limit(monkeypatch) -> None:
     assert result.used == 9
     assert result.limit == 10
     assert result.remaining == 1
-
+    assert result.overage == 0
+    assert result.new_overage == 0
 
 def test_naive_datetime_is_rejected() -> None:
     with pytest.raises(
@@ -108,3 +114,48 @@ def test_naive_datetime_is_rejected() -> None:
         match="timezone information",
     ):
         quotas.current_utc_month(datetime(2026, 9, 15))
+
+def test_overage_enabled_plan_accepts_usage_past_limit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        quotas.usage_events_repository,
+        "get_usage_total",
+        lambda *args, **kwargs: 90,
+    )
+
+    result = quotas.check_quota(
+        object(),
+        tenant_id=1,
+        plan=make_plan(overage_enabled=True),
+        usage_type=UsageType.AI_TOKENS,
+        requested=25,
+    )
+
+    assert result.used == 115
+    assert result.limit == 100
+    assert result.remaining == 0
+    assert result.overage == 15
+    assert result.new_overage == 15
+
+
+def test_existing_overage_charges_only_new_units(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        quotas.usage_events_repository,
+        "get_usage_total",
+        lambda *args, **kwargs: 110,
+    )
+
+    result = quotas.check_quota(
+        object(),
+        tenant_id=1,
+        plan=make_plan(overage_enabled=True),
+        usage_type=UsageType.AI_TOKENS,
+        requested=5,
+    )
+
+    assert result.used == 115
+    assert result.overage == 15
+    assert result.new_overage == 5

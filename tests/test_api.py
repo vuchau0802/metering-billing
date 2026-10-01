@@ -19,8 +19,10 @@ from app.models import (
 
 ACTIVE_TENANT_ID = 900_001
 PAST_DUE_TENANT_ID = 900_002
+PRO_TENANT_ID = 900_003
 ACTIVE_TENANT_KEY = "test-active-tenant-key"
 PAST_DUE_TENANT_KEY = "test-past-due-tenant-key"
+PRO_TENANT_KEY = "test-pro-tenant-key"
 
 VALID_BODY = {
     "tenant_id": ACTIVE_TENANT_ID,
@@ -35,6 +37,7 @@ def clean_test_data() -> None:
     tenant_ids = [
         ACTIVE_TENANT_ID,
         PAST_DUE_TENANT_ID,
+        PRO_TENANT_ID,
     ]
 
     with SessionLocal() as db:
@@ -64,10 +67,27 @@ def client() -> TestClient:
                     name=PlanName.FREE,
                     api_calls_limit=1_000,
                     ai_tokens_limit=100_000,
+                    overage_enabled=False,
                     stripe_price_id=None,
                 )
             )
             db.flush()
+
+        pro_plan = db.get(Plan, PlanName.PRO)
+
+        if pro_plan is None:
+            db.add(
+                Plan(
+                    name=PlanName.PRO,
+                    api_calls_limit=50_000,
+                    ai_tokens_limit=5_000_000,
+                    overage_enabled=True,
+                    stripe_price_id=None,
+                )
+            )
+            db.flush()
+        else:
+            pro_plan.overage_enabled = True
 
         db.add_all(
             [
@@ -87,6 +107,15 @@ def client() -> TestClient:
                     status=TenantStatus.PAST_DUE,
                     api_key_hash=hash_tenant_api_key(
                         PAST_DUE_TENANT_KEY
+                    ),
+                ),
+                Tenant(
+                    id=PRO_TENANT_ID,
+                    email="integration-pro@example.com",
+                    plan=PlanName.PRO,
+                    status=TenantStatus.ACTIVE,
+                    api_key_hash=hash_tenant_api_key(
+                        PRO_TENANT_KEY
                     ),
                 ),
             ]
@@ -172,6 +201,7 @@ def test_exact_quota_then_next_request_is_rejected(
         "used": 100_000,
         "limit": 100_000,
         "remaining": 0,
+        "overage": 0,
     }
 
     rejected = client.post(
@@ -346,6 +376,7 @@ def test_api_call_is_idempotent_and_updates_rollup(
         "used": 1,
         "limit": 1_000,
         "remaining": 999,
+        "overage": 0,
     }
 
     key = headers["Idempotency-Key"]
@@ -377,6 +408,7 @@ def test_api_call_is_idempotent_and_updates_rollup(
         "used": 1,
         "limit": 1_000,
         "remaining": 999,
+        "overage": 0,
     }
     assert usage.json()["cost_microusd"] == 2
 
@@ -411,6 +443,7 @@ def test_api_call_exact_quota_then_next_is_rejected(
         "used": 1_000,
         "limit": 1_000,
         "remaining": 0,
+        "overage": 0,
     }
 
     rejected = client.post(
@@ -441,6 +474,7 @@ def test_api_call_exact_quota_then_next_is_rejected(
         "used": 1_000,
         "limit": 1_000,
         "remaining": 0,
+        "overage": 0,
     }
     assert usage.json()["cost_microusd"] == 2_000
 
@@ -499,3 +533,101 @@ def test_zero_token_request_is_rejected_without_event(
         )
 
     assert event_count == 0
+
+def test_pro_overage_is_charged_persisted_and_idempotent(
+    client: TestClient,
+) -> None:
+    with SessionLocal() as db:
+        db.add(
+            UsageEvent(
+                tenant_id=PRO_TENANT_ID,
+                idempotency_key="pro-overage-boundary-seed",
+                usage_type=UsageType.AI_TOKENS,
+                quantity=4_999_900,
+                token_breakdown={
+                    "input": 4_999_900,
+                    "cached_input": 0,
+                    "output": 0,
+                    "reasoning": 0,
+                },
+                overage_quantity=0,
+                overage_cost_microusd=0,
+                cost_microusd=749_985_000,
+                response_snapshot={},
+            )
+        )
+        db.commit()
+
+    headers = idempotency_headers(PRO_TENANT_KEY)
+    body = {
+        "tenant_id": PRO_TENANT_ID,
+        "input_tokens": 200,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+    first = client.post(
+        "/generate",
+        headers=headers,
+        json=body,
+    )
+    replay = client.post(
+        "/generate",
+        headers=headers,
+        json=body,
+    )
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert first.json() == replay.json()
+    assert replay.headers["Idempotent-Replay"] == "true"
+
+    result = first.json()
+
+    assert result["quantity"] == 200
+    assert result["overage_quantity"] == 100
+    assert result["overage_cost_microusd"] == 75_000
+    assert result["cost_microusd"] == 105_000
+    assert result["usage"] == {
+        "used": 5_000_100,
+        "limit": 5_000_000,
+        "remaining": 0,
+        "overage": 100,
+    }
+
+    with SessionLocal() as db:
+        events = db.scalars(
+            select(UsageEvent).where(
+                UsageEvent.idempotency_key
+                == headers["Idempotency-Key"]
+            )
+        ).all()
+
+    assert len(events) == 1
+    assert events[0].overage_quantity == 100
+    assert events[0].overage_cost_microusd == 75_000
+    assert events[0].cost_microusd == 105_000
+
+    usage = client.get(
+        f"/usage/{PRO_TENANT_ID}",
+        headers=tenant_headers(PRO_TENANT_KEY),
+    )
+
+    assert usage.status_code == 200
+
+    report = usage.json()
+
+    assert report["overage_enabled"] is True
+    assert report["usage"]["ai_tokens"] == {
+        "used": 5_000_100,
+        "limit": 5_000_000,
+        "remaining": 0,
+        "overage": 100,
+    }
+    assert report["overage_cost_microusd"] == 75_000
+    assert report["cost_microusd"] == 750_090_000
+    assert (
+        report["projected_cost_microusd"]
+        >= report["cost_microusd"]
+    )

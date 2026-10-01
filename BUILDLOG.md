@@ -177,3 +177,18 @@ suite passes with tenant isolation enabled.
 - Alembic upgraded to `c91b2f6e4a7d (head)`.
 - Reseeding completed without changing the existing Stripe subscription state.
 - `python -m pytest -q` reported 48 passing tests.
+
+---
+
+## Stretch Goal - Overage Billing
+
+**Status: complete.**
+
+- Free plans remain hard-capped.
+- Pro plans accept usage beyond quota.
+- Overage units and surcharges are frozen on each usage event.
+- Usage rollups expose cumulative overage and overage cost.
+- Month-end projected cost uses deterministic integer arithmetic.
+- Idempotent replay returns the original frozen billing response.
+- Alembic added the overage fields in revision `4ae70d2a0651`.
+- The full suite reports 55 passing tests.

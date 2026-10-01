@@ -19,6 +19,8 @@ from app.schemas import (
 from app.services.costs import (
     calculate_ai_token_cost,
     calculate_api_call_cost,
+    calculate_overage_cost,
+    calculate_projected_monthly_cost,
 )
 from app.services.quotas import check_quota, current_utc_month
 
@@ -106,7 +108,7 @@ def _record_usage(
     usage_type: UsageType,
     quantity: int,
     token_breakdown: dict[str, int] | None,
-    cost_microusd: int,
+    base_cost_microusd: int,
     idempotency_key: str,
 ) -> MeteringResult:
     existing = usage_events_repository.get_by_idempotency_key(
@@ -164,6 +166,13 @@ def _record_usage(
         usage_type=usage_type,
         requested=quantity,
     )
+    overage_cost_microusd = calculate_overage_cost(
+        usage_type,
+        quota.new_overage,
+    )
+    total_cost_microusd = (
+        base_cost_microusd + overage_cost_microusd
+    )
 
     try:
         event = usage_events_repository.create_usage_event(
@@ -173,20 +182,40 @@ def _record_usage(
             usage_type=usage_type,
             quantity=quantity,
             token_breakdown=token_breakdown,
-            cost_microusd=cost_microusd,
+            overage_quantity=quota.new_overage,
+            overage_cost_microusd=overage_cost_microusd,
+            cost_microusd=total_cost_microusd,
             response_snapshot={},
         )
 
+        _, cumulative_cost, _ = (
+            usage_events_repository.get_usage_rollup(
+                db,
+                tenant_id=tenant.id,
+                window_start=quota.window.start,
+                window_end=quota.window.end,
+            )
+        )
+
+        projected_cost = calculate_projected_monthly_cost(
+            cumulative_cost,
+            window_start=quota.window.start,
+            window_end=quota.window.end,
+        )
         response = GenerateResponse(
             usage_event_id=event.id,
             idempotency_key=idempotency_key,
             quantity=quantity,
-            cost_microusd=cost_microusd,
+            cost_microusd=total_cost_microusd,
             usage=QuotaUsage(
                 used=quota.used,
                 limit=quota.limit,
                 remaining=quota.remaining,
+                overage=quota.overage,
             ),
+            overage_quantity=quota.new_overage,
+            overage_cost_microusd=overage_cost_microusd,
+            projected_cost_microusd=projected_cost,
         ).model_dump(mode="json")
 
         event.response_snapshot = response
@@ -238,7 +267,7 @@ def record_generate(
         usage_type=UsageType.AI_TOKENS,
         quantity=request.quantity,
         token_breakdown=request.token_breakdown,
-        cost_microusd=cost_microusd,
+        base_cost_microusd=cost_microusd,
         idempotency_key=idempotency_key,
     )
 
@@ -257,7 +286,7 @@ def record_api_call(
         usage_type=UsageType.API_CALL,
         quantity=quantity,
         token_breakdown=None,
-        cost_microusd=calculate_api_call_cost(quantity),
+        base_cost_microusd=calculate_api_call_cost(quantity),
         idempotency_key=idempotency_key,
     )
 
@@ -276,15 +305,22 @@ def get_usage_report(
     tenant, plan = tenant_record
     window = current_utc_month()
 
-    totals, total_cost = usage_events_repository.get_usage_rollup(
-        db,
-        tenant_id=tenant.id,
-        window_start=window.start,
-        window_end=window.end,
+    totals, total_cost, total_overage_cost = (
+        usage_events_repository.get_usage_rollup(
+            db,
+            tenant_id=tenant.id,
+            window_start=window.start,
+            window_end=window.end,
+        )
     )
 
     api_calls_used = totals[UsageType.API_CALL]
     ai_tokens_used = totals[UsageType.AI_TOKENS]
+    projected_cost = calculate_projected_monthly_cost(
+        total_cost,
+        window_start=window.start,
+        window_end=window.end,
+    )
 
     report = UsageResponse(
         tenant_id=tenant.id,
@@ -300,6 +336,10 @@ def get_usage_report(
                     0,
                     plan.api_calls_limit - api_calls_used,
                 ),
+                overage=max(
+                    0,
+                    api_calls_used - plan.api_calls_limit,
+                ),
             ),
             ai_tokens=QuotaUsage(
                 used=ai_tokens_used,
@@ -308,9 +348,16 @@ def get_usage_report(
                     0,
                     plan.ai_tokens_limit - ai_tokens_used,
                 ),
+                overage=max(
+                    0,
+                    ai_tokens_used - plan.ai_tokens_limit,
+                ),
             ),
         ),
         cost_microusd=total_cost,
+        overage_enabled=plan.overage_enabled,
+        overage_cost_microusd=total_overage_cost,
+        projected_cost_microusd=projected_cost,
     )
 
     return report.model_dump(mode="json")

@@ -18,6 +18,8 @@ class QuotaResult:
     used: int
     limit: int
     remaining: int
+    overage: int
+    new_overage: int
     window: QuotaWindow
 
 
@@ -114,7 +116,12 @@ def check_quota(
         window_end=window.end,
     )
 
-    if used + requested > limit:
+    new_used = used + requested
+    overage_before = max(0, used - limit)
+    overage_after = max(0, new_used - limit)
+    new_overage = overage_after - overage_before
+
+    if new_overage > 0 and not plan.overage_enabled:
         raise QuotaExceededError(
             usage_type=usage_type,
             used=used,
@@ -124,8 +131,10 @@ def check_quota(
         )
 
     return QuotaResult(
-        used=used + requested,
+        used=new_used,
         limit=limit,
-        remaining=limit - used - requested,
+        remaining=max(0, limit - new_used),
+        overage=overage_after,
+        new_overage=new_overage,
         window=window,
     )
