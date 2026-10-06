@@ -192,3 +192,40 @@ suite passes with tenant isolation enabled.
 - Idempotent replay returns the original frozen billing response.
 - Alembic added the overage fields in revision `4ae70d2a0651`.
 - The full suite reports 55 passing tests.
+
+---
+
+## Stretch Goal - Usage Alerts
+
+**Status: complete.**
+
+### What was built
+- Durable 80% and 100% quota-threshold alerts for API calls and AI tokens.
+- Alert creation in the same database transaction as the usage event.
+- Database uniqueness across tenant, usage type, UTC window, and threshold.
+- A transactional outbox worker using `FOR UPDATE SKIP LOCKED`.
+- Logging and SMTP notification transports behind a notifier interface.
+- Retry counters, captured errors, delivery timestamps, and terminal failure
+  state after the configured maximum attempts.
+- Bounded worker batches and protection against retrying one failed alert in a
+  tight loop during the same run.
+
+### Verification
+- `python -m pytest -q` reported 70 passing tests.
+- A manual Free-tenant probe crossed 80% and then 100% of the AI-token quota.
+- The database contained exactly two pending alerts, one for each threshold.
+- The worker logged both notifications and reported
+  `checked=2 delivered=2 retrying=0 failed=0`.
+- Both records finished as delivered with one attempt and a UTC timestamp.
+
+### AI assistance
+AI helped structure the feature as transactional detection plus an independent
+delivery worker, and suggested deterministic tests for retries and SMTP. I
+entered and ran each step, diagnosed a test-cleanup foreign-key failure, and
+verified the complete flow against PostgreSQL.
+
+### Decisions to explain in my own words
+- Why alert creation belongs in the usage transaction but delivery does not.
+- Why threshold comparisons use integer arithmetic.
+- Why the outbox has a unique constraint in addition to application checks.
+- Why workers use row locks with `SKIP LOCKED`.

@@ -280,3 +280,50 @@ Observed:
 Command: `python -m pytest -q`
 
 Result: `55 passed in 1.28s`
+
+---
+
+## Usage Alerts Evidence
+
+Date verified: 2026-10-05
+
+### Automated verification
+
+Command: `python -m pytest -q`
+
+Result: `70 passed in 1.81s`
+
+The suite covers exact threshold crossing, crossing both thresholds in one
+request, non-duplicate alerts, successful worker delivery, retryable provider
+errors, terminal failure, missing tenant email, batch limits, SMTP
+configuration validation, email construction, and transport selection.
+
+### Manual threshold and delivery probe
+
+A temporary Free tenant started with zero usage. An 80,000-token request was
+accepted and returned `used=80000`, `limit=100000`, and `remaining=20000`.
+A second 20,000-token request reached the exact quota and returned
+`used=100000` and `remaining=0`.
+
+The alert outbox then contained exactly:
+
+```text
+[(80, 'pending', 0), (100, 'pending', 0)]
+```
+
+Running the delivery worker produced:
+
+```text
+USAGE_ALERT tenant=920001 usage_type=ai_tokens threshold=80%
+USAGE_ALERT tenant=920001 usage_type=ai_tokens threshold=100%
+checked=2 delivered=2 retrying=0 failed=0
+```
+
+Database verification showed both records as `delivered`, each with one
+attempt and a non-null UTC delivery timestamp. The temporary tenant, usage
+events, and alerts were removed after verification.
+
+Conclusion: threshold detection, transactional outbox persistence, independent
+delivery, and final delivery-state recording work end to end. SMTP network
+calls are mocked in automated tests so the suite does not require external
+credentials or send real email.

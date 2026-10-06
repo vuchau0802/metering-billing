@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,6 +12,7 @@ OUTPUT_PRICE_PER_1K = 600_000
 API_CALL_OVERAGE_PRICE_PER_1K = 3_000
 AI_TOKEN_OVERAGE_PRICE_PER_1K = 750_000
 
+
 class Settings(BaseSettings):
     database_url: str = (
         "postgresql+psycopg://postgres:postgres@localhost:5432/metering"
@@ -20,6 +22,18 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str | None = None
     stripe_pro_price_id: str | None = None
     app_base_url: str = "http://localhost:8004"
+
+    usage_alert_transport: Literal[
+        "logging",
+        "smtp",
+    ] = "logging"
+
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_starttls: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -258,6 +259,80 @@ class ProcessedWebhookEvent(Base):
         nullable=False,
     )
     processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+class UsageAlert(Base):
+    __tablename__ = "usage_alerts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "usage_type",
+            "window_start",
+            "threshold_percent",
+            name="uq_usage_alert_threshold",
+        ),
+        Index(
+            "ix_usage_alerts_dispatch",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"),
+        index=True,
+        nullable=False,
+    )
+    usage_type: Mapped[UsageType] = mapped_column(
+        usage_type_enum,
+        nullable=False,
+    )
+    window_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    window_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    threshold_percent: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    used: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    limit: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        nullable=False,
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,

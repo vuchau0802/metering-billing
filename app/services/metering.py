@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.models import TenantStatus, UsageEvent, UsageType
 from app.repositories import tenants as tenants_repository
 from app.repositories import usage_events as usage_events_repository
+from app.repositories import usage_alerts as usage_alerts_repository
+from app.services.alerts import crossed_thresholds
 from app.schemas import (
     ApiCallRequest,
     GenerateRequest,
@@ -188,6 +190,22 @@ def _record_usage(
             response_snapshot={},
         )
 
+        thresholds = crossed_thresholds(
+            used_before=quota.used - quantity,
+            used_after=quota.used,
+            limit=quota.limit,
+        )
+
+        usage_alerts_repository.create_threshold_alerts(
+            db,
+            tenant_id=tenant.id,
+            usage_type=usage_type,
+            window_start=quota.window.start,
+            window_end=quota.window.end,
+            used=quota.used,
+            limit=quota.limit,
+            thresholds=thresholds,
+        )
         _, cumulative_cost, _ = (
             usage_events_repository.get_usage_rollup(
                 db,

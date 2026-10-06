@@ -12,6 +12,7 @@ from app.models import (
     PlanName,
     Tenant,
     TenantStatus,
+    UsageAlert,
     UsageEvent,
     UsageType,
 )
@@ -41,6 +42,11 @@ def clean_test_data() -> None:
     ]
 
     with SessionLocal() as db:
+        db.execute(
+            delete(UsageAlert).where(
+                UsageAlert.tenant_id.in_(tenant_ids)
+            )
+        )
         db.execute(
             delete(UsageEvent).where(
                 UsageEvent.tenant_id.in_(tenant_ids)

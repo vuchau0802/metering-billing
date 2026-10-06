@@ -17,6 +17,7 @@ FastAPI HTTP layer
   |     -> Tenant lock and quota check
   |     -> Cost calculation
   |     -> PostgreSQL usage event
+  |     -> 80% / 100% usage-alert outbox
   |
   |-- GET /usage/{tenant_id}
   |     -> Monthly usage and cost rollup
@@ -30,12 +31,16 @@ FastAPI HTTP layer
         -> Subscription and tenant synchronization
 
 External scheduler
-  |
-  `-> python -m app.jobs.reconcile_subscriptions
+  |-- python -m app.jobs.reconcile_subscriptions
         -> Stripe Subscription API
         -> Retry with exponential backoff
         -> Shared subscription synchronization
         -> PostgreSQL
+  |
+  `-- python -m app.jobs.send_usage_alerts
+        -> Pending usage-alert outbox
+        -> Logging or SMTP notifier
+        -> Delivery attempts and terminal failure state
 ```
 
 The HTTP, service, repository, and persistence layers are separated. Webhooks
@@ -80,6 +85,37 @@ normal usage cost plus the overage surcharge.
 Usage responses include cumulative overage, total overage cost, and a
 projected month-end cost based on elapsed time in the current UTC month.
 All calculations use integer micro-USD.
+
+## Usage alerts
+
+Crossing 80% or 100% of either monthly quota creates a durable outbox record
+in the same transaction as the usage event. A unique database constraint
+prevents duplicate alerts for the same tenant, usage type, UTC window, and
+threshold.
+
+Deliver pending alerts independently from the API:
+
+```powershell
+python -m app.jobs.send_usage_alerts
+```
+
+The worker locks rows with `FOR UPDATE SKIP LOCKED`, supports bounded batches,
+and records delivery attempts, errors, timestamps, and terminal failures.
+Logging delivery is the default for local development. To deliver email over
+SMTP, configure:
+
+```env
+USAGE_ALERT_TRANSPORT=smtp
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=...
+SMTP_PASSWORD=...
+SMTP_FROM_EMAIL=billing@example.com
+SMTP_USE_STARTTLS=true
+```
+
+Never commit SMTP credentials. Schedule the worker using Windows Task
+Scheduler, cron, or the deployment platform's scheduled-job facility.
 
 ## Setup
 
@@ -210,5 +246,7 @@ Task Scheduler, cron, or a deployment platform's scheduled-job facility.
 - Invoicing, proration, refunds, and tax calculation are not implemented.
 - The reconciliation worker is a standalone command and requires an external
   scheduler in deployment.
+- The usage-alert worker is also a standalone command and requires an external
+  scheduler. SMTP delivery depends on a separately managed mail provider.
 - Billing success and cancellation endpoints return JSON rather than a
   customer-facing frontend.
