@@ -73,3 +73,9 @@ def get_plan(
     plan_name: PlanName,
 ) -> Plan | None:
     return db.get(Plan, plan_name)
+
+
+def list_tenant_ids(db: Session) -> list[int]:
+    statement = select(Tenant.id).order_by(Tenant.id)
+
+    return list(db.scalars(statement))

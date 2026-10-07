@@ -337,3 +337,113 @@ class UsageAlert(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "period_start",
+            "period_end",
+            name="uq_invoice_tenant_period",
+        ),
+        Index(
+            "ix_invoices_tenant_period",
+            "tenant_id",
+            "period_start",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"),
+        nullable=False,
+    )
+    period_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    period_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="finalized",
+        server_default="finalized",
+        nullable=False,
+    )
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        default="usd",
+        server_default="usd",
+        nullable=False,
+    )
+    subtotal_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    overage_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    total_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class InvoiceLine(Base):
+    __tablename__ = "invoice_lines"
+    __table_args__ = (
+        UniqueConstraint(
+            "invoice_id",
+            "usage_type",
+            name="uq_invoice_line_usage_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(
+        ForeignKey("invoices.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    usage_type: Mapped[UsageType] = mapped_column(
+        usage_type_enum,
+        nullable=False,
+    )
+    description: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+    event_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    quantity: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    overage_quantity: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    subtotal_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    overage_cost_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    total_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )

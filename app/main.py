@@ -19,6 +19,8 @@ from app.schemas import (
     CheckoutResponse,
     GenerateRequest,
     GenerateResponse,
+    InvoiceDetailResponse,
+    InvoiceSummaryResponse,
     UsageResponse,
     WebhookResponse,
 )
@@ -42,6 +44,11 @@ from app.services.webhooks import (
     process_webhook,
 )
 from app.services.quotas import QuotaExceededError
+from app.services.invoices import (
+    InvoiceNotFoundError,
+    get_monthly_invoice,
+    list_monthly_invoices,
+)
 
 IdempotencyKey = Annotated[
     str,
@@ -118,6 +125,22 @@ async def handle_tenant_authentication_error(
         content={
             "error": {
                 "code": "unauthorized",
+                "message": str(error),
+            }
+        },
+    )
+
+
+@app.exception_handler(InvoiceNotFoundError)
+async def handle_invoice_not_found(
+    request: Request,
+    error: InvoiceNotFoundError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "code": "invoice_not_found",
                 "message": str(error),
             }
         },
@@ -302,6 +325,92 @@ def usage(
         api_key=tenant_api_key,
     )
     return get_usage_report(db, tenant_id)
+
+
+@app.get(
+    "/invoices/{tenant_id}",
+    response_model=list[InvoiceSummaryResponse],
+)
+def list_invoices(
+    tenant_id: int,
+    tenant_api_key: TenantApiKey = None,
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    require_tenant_access(
+        db,
+        tenant_id=tenant_id,
+        api_key=tenant_api_key,
+    )
+
+    return [
+        {
+            "id": invoice.id,
+            "tenant_id": invoice.tenant_id,
+            "period_start": invoice.period_start,
+            "period_end": invoice.period_end,
+            "status": invoice.status,
+            "currency": invoice.currency,
+            "subtotal_microusd": invoice.subtotal_microusd,
+            "overage_cost_microusd": (
+                invoice.overage_cost_microusd
+            ),
+            "total_microusd": invoice.total_microusd,
+            "generated_at": invoice.generated_at,
+        }
+        for invoice in list_monthly_invoices(db, tenant_id)
+    ]
+
+
+@app.get(
+    "/invoices/{tenant_id}/{invoice_id}",
+    response_model=InvoiceDetailResponse,
+)
+def invoice_detail(
+    tenant_id: int,
+    invoice_id: int,
+    tenant_api_key: TenantApiKey = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    require_tenant_access(
+        db,
+        tenant_id=tenant_id,
+        api_key=tenant_api_key,
+    )
+    invoice, lines = get_monthly_invoice(
+        db,
+        tenant_id=tenant_id,
+        invoice_id=invoice_id,
+    )
+
+    return {
+        "id": invoice.id,
+        "tenant_id": invoice.tenant_id,
+        "period_start": invoice.period_start,
+        "period_end": invoice.period_end,
+        "status": invoice.status,
+        "currency": invoice.currency,
+        "subtotal_microusd": invoice.subtotal_microusd,
+        "overage_cost_microusd": (
+            invoice.overage_cost_microusd
+        ),
+        "total_microusd": invoice.total_microusd,
+        "generated_at": invoice.generated_at,
+        "lines": [
+            {
+                "usage_type": line.usage_type,
+                "description": line.description,
+                "event_count": line.event_count,
+                "quantity": line.quantity,
+                "overage_quantity": line.overage_quantity,
+                "subtotal_microusd": line.subtotal_microusd,
+                "overage_cost_microusd": (
+                    line.overage_cost_microusd
+                ),
+                "total_microusd": line.total_microusd,
+            }
+            for line in lines
+        ],
+    }
 
 @app.post(
     "/generate",

@@ -229,3 +229,34 @@ verified the complete flow against PostgreSQL.
 - Why threshold comparisons use integer arithmetic.
 - Why the outbox has a unique constraint in addition to application checks.
 - Why workers use row locks with `SKIP LOCKED`.
+
+---
+
+## Stretch Goal - Monthly Invoices
+
+**Status: complete.**
+
+### What was built
+- Finalized monthly statement headers and immutable usage-type line items.
+- Frozen event count, quantity, base cost, overage quantity, overage cost, and
+  total cost using integer micro-USD.
+- One invoice per tenant and completed UTC month, enforced by PostgreSQL.
+- A rerunnable monthly generation command for the previous UTC month.
+- Authenticated invoice list and detail endpoints with tenant isolation.
+- Zero-total statements for months without activity.
+
+### Verification
+- Alembic upgraded to `a8d4e6f1c2b3 (head)`.
+- `python -m pytest -q` reported 76 passing tests.
+- The first live generation run reported
+  `checked=4 created=4 existing=0 failed=0`.
+- Repeating it reported `checked=4 created=0 existing=4 failed=0`.
+- Tenant 1's authenticated list and detail endpoints returned its finalized
+  September statement.
+
+### Decisions to explain in my own words
+- Why only completed UTC months can be finalized.
+- Why invoice lines copy frozen usage-event values instead of recalculating
+  historical prices.
+- Why empty months still produce statements.
+- Why the unique tenant-period constraint is required even with job checks.

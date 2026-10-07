@@ -327,3 +327,45 @@ Conclusion: threshold detection, transactional outbox persistence, independent
 delivery, and final delivery-state recording work end to end. SMTP network
 calls are mocked in automated tests so the suite does not require external
 credentials or send real email.
+
+---
+
+## Monthly Invoice Evidence
+
+Date verified: 2026-10-05
+
+### Automated verification
+
+Command: `python -m pytest -q`
+
+Result: `76 passed in 1.85s`
+
+The invoice tests cover UTC year boundaries, rejection of open months, frozen
+base and overage line totals, exclusion of out-of-period usage, empty-month
+statements, generation idempotency, authenticated reads, and safe job reruns.
+
+### Migration and job probe
+
+Alembic reported `a8d4e6f1c2b3 (head)`. The first September generation run
+reported:
+
+```text
+checked=4 created=4 existing=0 failed=0
+```
+
+Repeating the same command reported:
+
+```text
+checked=4 created=0 existing=4 failed=0
+```
+
+This confirms that finalized tenant-month statements are not duplicated.
+
+### Authenticated statement probe
+
+`GET /invoices/1` returned one finalized September statement. Fetching its
+detail through `GET /invoices/1/5` returned the same tenant, UTC period,
+currency, totals, generation timestamp, and line-item collection. Tenant 1
+had no September usage remaining in the local database, so the verified
+statement correctly had a zero total and an empty line list. Automated tests
+separately verify nonzero base and overage line items.

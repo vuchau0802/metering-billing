@@ -41,6 +41,13 @@ External scheduler
         -> Pending usage-alert outbox
         -> Logging or SMTP notifier
         -> Delivery attempts and terminal failure state
+
+Monthly scheduler
+  |
+  `-- python -m app.jobs.generate_invoices
+        -> Previous completed UTC month
+        -> Frozen usage and overage line items
+        -> Idempotent finalized statements
 ```
 
 The HTTP, service, repository, and persistence layers are separated. Webhooks
@@ -116,6 +123,30 @@ SMTP_USE_STARTTLS=true
 
 Never commit SMTP credentials. Schedule the worker using Windows Task
 Scheduler, cron, or the deployment platform's scheduled-job facility.
+
+## Monthly invoices
+
+Generate finalized statements for the previous completed UTC month:
+
+```powershell
+python -m app.jobs.generate_invoices
+```
+
+Each tenant receives at most one invoice per UTC month. Repeating the command
+returns the existing statement instead of duplicating it. Statements aggregate
+the frozen usage-event values into one line per usage type, including event
+count, quantity, overage quantity, base cost, overage cost, and total cost.
+Months without usage produce valid zero-total statements.
+
+Read a tenant's statements with its `X-Tenant-Key`:
+
+```text
+GET /invoices/{tenant_id}
+GET /invoices/{tenant_id}/{invoice_id}
+```
+
+Invoices use integer micro-USD and are immutable after finalization. The job
+refuses to invoice the current or a future UTC month.
 
 ## Setup
 
@@ -214,6 +245,8 @@ state. Processed Stripe event IDs provide replay-safe webhook handling.
 | `POST` | `/webhooks/stripe` | Verify and process Stripe webhook events |
 | `GET` | `/billing/success` | Checkout success redirect response |
 | `GET` | `/billing/cancel` | Checkout cancellation redirect response |
+| `GET` | `/invoices/{tenant_id}` | List finalized monthly statements |
+| `GET` | `/invoices/{tenant_id}/{invoice_id}` | Read statement line items |
 
 ## Subscription reconciliation job
 
@@ -243,7 +276,8 @@ Task Scheduler, cron, or a deployment platform's scheduled-job facility.
 - Only Free and Pro plans and two usage types are supported.
 - Usage quotas reset by UTC calendar month, independently of Stripe billing
   periods.
-- Invoicing, proration, refunds, and tax calculation are not implemented.
+- Proration, refunds, tax calculation, and payment collection for generated
+  statements are not implemented.
 - The reconciliation worker is a standalone command and requires an external
   scheduler in deployment.
 - The usage-alert worker is also a standalone command and requires an external

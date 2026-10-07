@@ -11,6 +11,7 @@ endpoints:
   usage: GET /usage/{tenant_id}       # rollup: used, limit, cost_microusd
   checkout: POST /billing/checkout    # Stripe test-mode Checkout session
   webhook: POST /webhooks/stripe      # forged signature -> 400; replayed event -> ignored
+  invoices: GET /invoices/{tenant_id} # finalized UTC-month statements
 
 # Demo tenants created by `seed` (free tier, for driving the quota boundary).
 seed_tenants:

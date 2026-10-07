@@ -123,3 +123,31 @@ class BillingRedirectResponse(BaseModel):
     status: Literal["success", "canceled"]
     message: str
     session_id: str | None = None
+
+
+class InvoiceLineResponse(BaseModel):
+    usage_type: UsageType
+    description: str
+    event_count: StrictNonNegativeInt
+    quantity: StrictNonNegativeInt
+    overage_quantity: StrictNonNegativeInt
+    subtotal_microusd: StrictNonNegativeInt
+    overage_cost_microusd: StrictNonNegativeInt
+    total_microusd: StrictNonNegativeInt
+
+
+class InvoiceSummaryResponse(BaseModel):
+    id: StrictPositiveInt
+    tenant_id: StrictPositiveInt
+    period_start: datetime
+    period_end: datetime
+    status: Literal["finalized"]
+    currency: Literal["usd"]
+    subtotal_microusd: StrictNonNegativeInt
+    overage_cost_microusd: StrictNonNegativeInt
+    total_microusd: StrictNonNegativeInt
+    generated_at: datetime
+
+
+class InvoiceDetailResponse(InvoiceSummaryResponse):
+    lines: list[InvoiceLineResponse]
