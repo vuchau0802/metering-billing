@@ -12,6 +12,7 @@ from app.services.metering import (
     PaymentRequiredError,
     TenantNotFoundError,
 )
+from app.services.quotas import current_utc_month
 
 
 class BillingConfigurationError(Exception):
@@ -68,6 +69,10 @@ def create_checkout_session(
             "The Pro Stripe Price ID is not configured"
         )
 
+    billing_cycle_anchor = int(
+        current_utc_month().end.timestamp()
+    )
+
     parameters: dict[str, Any] = {
         "mode": "subscription",
         "line_items": [
@@ -82,6 +87,8 @@ def create_checkout_session(
             "plan": PlanName.PRO.value,
         },
         "subscription_data": {
+            "billing_cycle_anchor": billing_cycle_anchor,
+            "proration_behavior": "create_prorations",
             "metadata": {
                 "tenant_id": str(tenant.id),
                 "plan": PlanName.PRO.value,

@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.main import app
 from app.models import (
+    BillingAdjustment,
     PlanName,
     ProcessedWebhookEvent,
     Subscription,
@@ -270,6 +271,12 @@ def test_checkout_completed_upgrades_tenant_to_pro(
             )
         )
         db.execute(
+            delete(BillingAdjustment).where(
+                BillingAdjustment.tenant_id
+                == CHECKOUT_TENANT_ID
+            )
+        )
+        db.execute(
             delete(Tenant).where(
                 Tenant.id == CHECKOUT_TENANT_ID
             )
@@ -319,6 +326,12 @@ def test_checkout_completed_upgrades_tenant_to_pro(
                     == CHECKOUT_SUBSCRIPTION_ID
                 )
             )
+            adjustment = db.scalar(
+                select(BillingAdjustment).where(
+                    BillingAdjustment.source_event_id
+                    == CHECKOUT_EVENT_ID
+                )
+            )
 
             assert tenant is not None
             assert tenant.plan == PlanName.PRO
@@ -333,6 +346,13 @@ def test_checkout_completed_upgrades_tenant_to_pro(
             assert subscription.status == SubscriptionStatus.ACTIVE
             assert subscription.plan_name == PlanName.PRO
             assert subscription.last_stripe_event_created > 0
+
+            assert adjustment is not None
+            assert adjustment.tenant_id == CHECKOUT_TENANT_ID
+            assert adjustment.old_plan == PlanName.FREE
+            assert adjustment.new_plan == PlanName.PRO
+            assert 0 <= adjustment.amount_microusd <= 10_000_000
+            assert adjustment.invoice_id is None
     finally:
         with SessionLocal() as db:
             db.execute(
@@ -345,6 +365,12 @@ def test_checkout_completed_upgrades_tenant_to_pro(
                 delete(Subscription).where(
                     Subscription.stripe_subscription_id
                     == CHECKOUT_SUBSCRIPTION_ID
+                )
+            )
+            db.execute(
+                delete(BillingAdjustment).where(
+                    BillingAdjustment.tenant_id
+                    == CHECKOUT_TENANT_ID
                 )
             )
             db.execute(
@@ -369,6 +395,12 @@ def test_subscription_lifecycle_updates_tenant_and_record(
             delete(Subscription).where(
                 Subscription.stripe_subscription_id
                 == SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
+            delete(BillingAdjustment).where(
+                BillingAdjustment.tenant_id
+                == SUBSCRIPTION_TENANT_ID
             )
         )
         db.execute(
@@ -477,6 +509,12 @@ def test_subscription_lifecycle_updates_tenant_and_record(
                 )
             )
             db.execute(
+                delete(BillingAdjustment).where(
+                    BillingAdjustment.tenant_id
+                    == SUBSCRIPTION_TENANT_ID
+                )
+            )
+            db.execute(
                 delete(Tenant).where(
                     Tenant.id == SUBSCRIPTION_TENANT_ID
                 )
@@ -499,6 +537,12 @@ def test_stale_subscription_event_cannot_resurrect_canceled_tenant(
             delete(Subscription).where(
                 Subscription.stripe_subscription_id
                 == ORDERING_SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
+            delete(BillingAdjustment).where(
+                BillingAdjustment.tenant_id
+                == ORDERING_TENANT_ID
             )
         )
         db.execute(
@@ -609,6 +653,12 @@ def test_stale_subscription_event_cannot_resurrect_canceled_tenant(
                 delete(Subscription).where(
                     Subscription.stripe_subscription_id
                     == ORDERING_SUBSCRIPTION_ID
+                )
+            )
+            db.execute(
+                delete(BillingAdjustment).where(
+                    BillingAdjustment.tenant_id
+                    == ORDERING_TENANT_ID
                 )
             )
             db.execute(

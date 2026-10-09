@@ -14,7 +14,7 @@ from app.models import (
 from app.repositories import subscriptions as subscriptions_repository
 from app.repositories import tenants, webhook_events
 from app.services.billing import BillingConfigurationError
-
+from app.services.proration import record_upgrade_proration
 
 class InvalidWebhookSignatureError(Exception):
     pass
@@ -64,6 +64,7 @@ def _handle_checkout_completed(
     db: Session,
     session: dict[str, Any],
     *,
+    stripe_event_id: str,
     stripe_event_created: int,
 ) -> None:
     if session.get("mode") != "subscription":
@@ -85,6 +86,8 @@ def _handle_checkout_completed(
         raise InvalidWebhookPayloadError(
             f"Tenant {tenant_id} was not found"
         )
+
+    old_plan = tenant.plan
 
     stripe_customer_id = session.get("customer")
     stripe_subscription_id = session.get("subscription")
@@ -134,6 +137,19 @@ def _handle_checkout_completed(
         last_stripe_event_created=stripe_event_created,
     )
 
+    if old_plan == PlanName.FREE:
+        record_upgrade_proration(
+            db,
+            tenant_id=tenant.id,
+            source_event_id=stripe_event_id,
+            old_plan=PlanName.FREE,
+            new_plan=PlanName.PRO,
+            effective_at=datetime.fromtimestamp(
+                stripe_event_created,
+                tz=timezone.utc,
+            ),
+        )
+
     tenant.stripe_customer_id = stripe_customer_id
     tenant.plan = PlanName.PRO
     tenant.status = TenantStatus.ACTIVE
@@ -142,6 +158,7 @@ def _handle_checkout_completed(
 def _dispatch_event(
     db: Session,
     *,
+    event_id: str,
     event_type: str,
     event_object: dict[str, Any],
     stripe_event_created: int,
@@ -150,6 +167,7 @@ def _dispatch_event(
         _handle_checkout_completed(
             db,
             event_object,
+            stripe_event_id=event_id,
             stripe_event_created=stripe_event_created,
         )
     elif event_type in {
@@ -159,12 +177,14 @@ def _dispatch_event(
         synchronize_subscription(
             db,
             event_object,
+            stripe_event_id=event_id,
             stripe_event_created=stripe_event_created,
         )
     elif event_type == "customer.subscription.deleted":
         synchronize_subscription(
             db,
             event_object,
+            stripe_event_id=event_id,
             stripe_event_created=stripe_event_created,
             deleted=True,
         )
@@ -219,6 +239,7 @@ def synchronize_subscription(
     db: Session,
     subscription: dict[str, Any],
     *,
+    stripe_event_id: str | None = None,
     stripe_event_created: int | None = None,
     deleted: bool = False,
 ) -> bool:
@@ -257,6 +278,8 @@ def synchronize_subscription(
         raise InvalidWebhookPayloadError(
             "The subscription does not match a tenant"
         )
+
+    old_plan = tenant.plan
 
     applied_event_created = (
         int(time.time())
@@ -314,10 +337,30 @@ def synchronize_subscription(
     tenant.stripe_customer_id = stripe_customer_id
     tenant.status = tenant_status
 
-    if subscription_status == SubscriptionStatus.CANCELED:
-        tenant.plan = PlanName.FREE
-    else:
-        tenant.plan = PlanName.PRO
+    new_plan = (
+        PlanName.FREE
+        if subscription_status == SubscriptionStatus.CANCELED
+        else PlanName.PRO
+    )
+
+    if (
+        stripe_event_id is not None
+        and old_plan == PlanName.FREE
+        and new_plan == PlanName.PRO
+    ):
+        record_upgrade_proration(
+            db,
+            tenant_id=tenant.id,
+            source_event_id=stripe_event_id,
+            old_plan=old_plan,
+            new_plan=new_plan,
+            effective_at=datetime.fromtimestamp(
+                applied_event_created,
+                tz=timezone.utc,
+            ),
+        )
+
+    tenant.plan = new_plan
     return True
 
 
@@ -368,6 +411,7 @@ def process_webhook(
 
         _dispatch_event(
             db,
+            event_id=event_id,
             event_type=event_type,
             event_object=event_object,
             stripe_event_created=event_created,

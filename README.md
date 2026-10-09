@@ -148,6 +148,18 @@ GET /invoices/{tenant_id}/{invoice_id}
 Invoices use integer micro-USD and are immutable after finalization. The job
 refuses to invoice the current or a future UTC month.
 
+## Mid-cycle upgrade proration
+
+Free-to-Pro upgrades are prorated through the end of the current UTC calendar
+month. Checkout anchors the Stripe subscription to the next UTC-month boundary,
+and the verified upgrade webhook records one immutable billing adjustment using
+integer, round-half-up micro-USD arithmetic.
+
+Webhook replay cannot duplicate the charge because each adjustment is uniquely
+keyed by its Stripe event ID. Finalized monthly statements include eligible
+adjustments separately, while late adjustments roll into the next open
+statement.
+
 ## Setup
 
 Create and activate a virtual environment:
@@ -276,8 +288,9 @@ Task Scheduler, cron, or a deployment platform's scheduled-job facility.
 - Only Free and Pro plans and two usage types are supported.
 - Usage quotas reset by UTC calendar month, independently of Stripe billing
   periods.
-- Proration, refunds, tax calculation, and payment collection for generated
-  statements are not implemented.
+- Downgrade credits, refunds, tax calculation, and payment collection for
+  locally generated statements are not implemented. Proration currently covers
+  Free-to-Pro upgrades only.
 - The reconciliation worker is a standalone command and requires an external
   scheduler in deployment.
 - The usage-alert worker is also a standalone command and requires an external

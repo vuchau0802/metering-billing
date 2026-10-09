@@ -66,7 +66,7 @@ Schema is managed as **Alembic migrations** against PostgreSQL (not `CREATE TABL
 | Free | 1,000 | 100,000 | Disabled |
 | Pro  | 50,000 | 5,000,000 | Enabled |
 
-**Quota window = UTC calendar month** (`created_at >= first_of_month 00:00:00Z` AND `< first_of_next_month 00:00:00Z`). Deliberately *not* the Stripe billing period: a calendar month keeps the rollup a single indexed range scan, and mid-cycle plan changes are out of core scope. The tradeoff is that an upgrade mid-month does not reset the window — that is a documented simplification, and proration/billing-period-aligned quotas are the stretch goal that revisits it.
+**Quota window = UTC calendar month** (`created_at >= first_of_month 00:00:00Z` AND `< first_of_next_month 00:00:00Z`). Deliberately *not* the Stripe billing period: a calendar month keeps the rollup a single indexed range scan. A mid-cycle upgrade does not reset usage; the proration policy below charges only the remaining portion of the same UTC month.
 
 ## Pinned pricing constants
 
@@ -211,8 +211,49 @@ projected_cost = current_cost * total_month_seconds // elapsed_month_seconds
 The projection never falls below actual cost. It is informational and does
 not rewrite historical usage events or their idempotent response snapshots.
 
+## Mid-cycle upgrade proration
+
+Proration applies when a tenant upgrades from Free to Pro during a UTC
+calendar month. The quota cycle, statement cycle, and proration cycle all use
+the same UTC month boundary.
+
+The upgrade becomes effective at the timestamp of the verified Stripe event.
+Free has a monthly base price of zero. The configured Pro monthly price is an
+integer number of micro-USD and must match the recurring Stripe Price used by
+Checkout.
+
+Only the remaining portion of the current month is charged:
+
+```text
+remaining_seconds = period_end - effective_at
+period_seconds = period_end - period_start
+price_difference = new_monthly_price - old_monthly_price
+
+numerator = price_difference * remaining_seconds
+proration_microusd = (numerator + period_seconds // 2) // period_seconds
+```
+
+The final expression is integer round-half-up for a non-negative upgrade
+charge. Floating-point money is forbidden. The effective timestamp must
+satisfy `period_start <= effective_at <= period_end`.
+
+An upgrade exactly at `period_start` charges the full price difference. An
+upgrade exactly at `period_end` charges zero. Usage already recorded in the
+month remains unchanged and is evaluated against the new plan limit after the
+upgrade.
+
+Each Stripe event may create at most one billing adjustment. Replayed or
+out-of-order events must not create duplicate adjustments. The old plan, new
+plan, monthly prices, period, effective timestamp, and calculated amount are
+frozen when the adjustment is created. Later pricing changes do not rewrite
+history.
+
+The adjustment appears separately from usage and overage charges on the
+finalized monthly statement.
+
 ## Explicit non-goal
 
-**Invoicing and proration remain out of scope.** Overage charges are measured
-and reported, but this service does not create invoices, prorate subscriptions,
-issue refunds, or calculate tax.
+Finalized usage statements are implemented, and Free-to-Pro proration follows
+the policy above. Downgrade credits, refunds, tax calculation, payment
+collection for locally generated statements, and multiple paid tiers remain
+out of scope.

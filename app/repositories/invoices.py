@@ -92,6 +92,7 @@ def create_finalized_invoice(
     period_start: datetime,
     period_end: datetime,
     aggregates: list[UsageLineAggregate],
+    adjustment_total_microusd: int,
 ) -> Invoice:
     subtotal = sum(
         item.subtotal_microusd for item in aggregates
@@ -99,7 +100,10 @@ def create_finalized_invoice(
     overage_cost = sum(
         item.overage_cost_microusd for item in aggregates
     )
-    total = sum(item.total_microusd for item in aggregates)
+    total = (
+        sum(item.total_microusd for item in aggregates)
+        + adjustment_total_microusd
+    )
 
     invoice = Invoice(
         tenant_id=tenant_id,

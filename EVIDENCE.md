@@ -369,3 +369,59 @@ currency, totals, generation timestamp, and line-item collection. Tenant 1
 had no September usage remaining in the local database, so the verified
 statement correctly had a zero total and an empty line list. Automated tests
 separately verify nonzero base and overage line items.
+
+---
+
+## Mid-Cycle Proration Evidence
+
+Date verified: 2026-10-08
+
+### Automated verification
+
+Commands:
+
+```text
+python -m compileall app tests
+python -m pytest -q
+git diff --check
+```
+
+Result: `88 passed in 2.22s`. Compilation completed successfully, and the diff
+check reported no whitespace errors. Git only displayed informational LF-to-CRLF
+working-copy warnings.
+
+The suite covers exact period boundaries, midpoint rounding, invalid periods,
+unsupported transitions, webhook replay, event ordering, invoice inclusion,
+late-adjustment rollover, and Checkout billing-cycle anchoring.
+
+### Live Stripe comparison
+
+A temporary Free tenant completed a Stripe test-mode Checkout. The listener
+forwarded both `checkout.session.completed` and
+`customer.subscription.created`; the API returned HTTP 200 for each event.
+The local subscription was active through `2026-11-01T00:00:00Z`, confirming
+that Checkout used the next UTC-month boundary.
+
+Exactly one local adjustment was recorded:
+
+```text
+old_plan=free
+new_plan=pro
+amount_microusd=7376990
+```
+
+That amount rounds to 738 cents. Stripe invoice
+`in_1UOUB90BEnnsEZqVRlIXvKb5` independently reported:
+
+```text
+amount_due=738
+amount_paid=738
+subtotal=738
+total=738
+proration=true
+```
+
+The local calculation therefore matched Stripe to the cent. Canceling the test
+subscription produced `tenant: free canceled` and `subscription: canceled`.
+The temporary tenant, subscription, and adjustment rows were removed after the
+probe.

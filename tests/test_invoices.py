@@ -12,6 +12,7 @@ from app.jobs.generate_invoices import (
 )
 from app.main import app
 from app.models import (
+    BillingAdjustment,
     Invoice,
     InvoiceLine,
     Plan,
@@ -26,7 +27,7 @@ from app.services.invoices import (
     generate_monthly_invoice,
     previous_utc_month,
 )
-
+from app.services.proration import record_upgrade_proration
 
 TENANT_ID = 930_001
 TENANT_KEY = "invoice-test-key"
@@ -40,6 +41,11 @@ def clean_invoice_test_data() -> None:
     with SessionLocal() as db:
         invoice_ids = select(Invoice.id).where(
             Invoice.tenant_id == TENANT_ID
+        )
+        db.execute(
+            delete(BillingAdjustment).where(
+                BillingAdjustment.tenant_id == TENANT_ID
+            )
         )
         db.execute(
             delete(InvoiceLine).where(
@@ -140,6 +146,28 @@ def generate_september_invoice() -> int:
         )
 
     return result.invoice.id
+
+
+def add_midmonth_adjustment(
+    source_event_id: str,
+) -> int:
+    with SessionLocal() as db:
+        result = record_upgrade_proration(
+            db,
+            tenant_id=TENANT_ID,
+            source_event_id=source_event_id,
+            old_plan=PlanName.FREE,
+            new_plan=PlanName.PRO,
+            effective_at=datetime(
+                2026,
+                9,
+                16,
+                tzinfo=UTC,
+            ),
+        )
+        db.commit()
+
+        return result.adjustment.id
 
 
 def test_previous_utc_month_crosses_year_boundary() -> None:
@@ -327,3 +355,107 @@ def test_monthly_job_is_safe_to_rerun(
         existing=1,
         failed=0,
     )
+
+
+def test_invoice_includes_proration_adjustment() -> None:
+    adjustment_id = add_midmonth_adjustment(
+        "evt_invoice_proration"
+    )
+    invoice_id = generate_september_invoice()
+
+    with SessionLocal() as db:
+        invoice = db.get(Invoice, invoice_id)
+        adjustment = db.get(
+            BillingAdjustment,
+            adjustment_id,
+        )
+
+        assert invoice is not None
+        assert adjustment is not None
+        assert invoice.total_microusd == 5_000_000
+        assert adjustment.amount_microusd == 5_000_000
+        assert adjustment.invoice_id == invoice_id
+
+        replay = generate_monthly_invoice(
+            db,
+            tenant_id=TENANT_ID,
+            year=2026,
+            month=9,
+            now=NOW,
+        )
+
+        adjustment_count = db.scalar(
+            select(func.count())
+            .select_from(BillingAdjustment)
+            .where(
+                BillingAdjustment.tenant_id == TENANT_ID
+            )
+        )
+
+    assert replay.created is False
+    assert replay.invoice.id == invoice_id
+    assert adjustment_count == 1
+
+    client = TestClient(app)
+    response = client.get(
+        f"/invoices/{TENANT_ID}/{invoice_id}",
+        headers={"X-Tenant-Key": TENANT_KEY},
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["adjustment_microusd"] == 5_000_000
+    assert body["total_microusd"] == 5_000_000
+    assert body["adjustments"] == [
+        {
+            "id": adjustment_id,
+            "source_event_id": "evt_invoice_proration",
+            "old_plan": "free",
+            "new_plan": "pro",
+            "period_start": "2026-09-01T00:00:00Z",
+            "period_end": "2026-10-01T00:00:00Z",
+            "effective_at": "2026-09-16T00:00:00Z",
+            "old_monthly_price_microusd": 0,
+            "new_monthly_price_microusd": 10_000_000,
+            "amount_microusd": 5_000_000,
+            "currency": "usd",
+        }
+    ]
+
+
+def test_late_adjustment_rolls_into_next_invoice() -> None:
+    september_invoice_id = generate_september_invoice()
+    adjustment_id = add_midmonth_adjustment(
+        "evt_late_proration"
+    )
+
+    with SessionLocal() as db:
+        october = generate_monthly_invoice(
+            db,
+            tenant_id=TENANT_ID,
+            year=2026,
+            month=10,
+            now=datetime(
+                2026,
+                11,
+                5,
+                tzinfo=UTC,
+            ),
+        )
+
+        september = db.get(
+            Invoice,
+            september_invoice_id,
+        )
+        adjustment = db.get(
+            BillingAdjustment,
+            adjustment_id,
+        )
+
+    assert september is not None
+    assert adjustment is not None
+    assert september.total_microusd == 0
+    assert october.invoice.total_microusd == 5_000_000
+    assert adjustment.invoice_id == october.invoice.id

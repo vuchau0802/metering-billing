@@ -447,3 +447,76 @@ class InvoiceLine(Base):
         BigInteger,
         nullable=False,
     )
+
+
+class BillingAdjustment(Base):
+    __tablename__ = "billing_adjustments"
+    __table_args__ = (
+        Index(
+            "ix_billing_adjustments_tenant_period",
+            "tenant_id",
+            "period_start",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+    )
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id"),
+        nullable=False,
+    )
+    invoice_id: Mapped[int | None] = mapped_column(
+        ForeignKey("invoices.id"),
+        index=True,
+        nullable=True,
+    )
+    source_event_id: Mapped[str] = mapped_column(
+        Text,
+        unique=True,
+        nullable=False,
+    )
+    old_plan: Mapped[PlanName] = mapped_column(
+        plan_name_type,
+        nullable=False,
+    )
+    new_plan: Mapped[PlanName] = mapped_column(
+        plan_name_type,
+        nullable=False,
+    )
+    period_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    period_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    old_monthly_price_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    new_monthly_price_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    amount_microusd: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        default="usd",
+        server_default="usd",
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )

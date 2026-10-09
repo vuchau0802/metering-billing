@@ -376,7 +376,7 @@ def invoice_detail(
         tenant_id=tenant_id,
         api_key=tenant_api_key,
     )
-    invoice, lines = get_monthly_invoice(
+    invoice, lines, adjustments = get_monthly_invoice(
         db,
         tenant_id=tenant_id,
         invoice_id=invoice_id,
@@ -395,6 +395,10 @@ def invoice_detail(
         ),
         "total_microusd": invoice.total_microusd,
         "generated_at": invoice.generated_at,
+        "adjustment_microusd": sum(
+            adjustment.amount_microusd
+            for adjustment in adjustments
+        ),
         "lines": [
             {
                 "usage_type": line.usage_type,
@@ -409,6 +413,26 @@ def invoice_detail(
                 "total_microusd": line.total_microusd,
             }
             for line in lines
+        ],
+        "adjustments": [
+            {
+                "id": adjustment.id,
+                "source_event_id": adjustment.source_event_id,
+                "old_plan": adjustment.old_plan,
+                "new_plan": adjustment.new_plan,
+                "period_start": adjustment.period_start,
+                "period_end": adjustment.period_end,
+                "effective_at": adjustment.effective_at,
+                "old_monthly_price_microusd": (
+                    adjustment.old_monthly_price_microusd
+                ),
+                "new_monthly_price_microusd": (
+                    adjustment.new_monthly_price_microusd
+                ),
+                "amount_microusd": adjustment.amount_microusd,
+                "currency": adjustment.currency,
+            }
+            for adjustment in adjustments
         ],
     }
 

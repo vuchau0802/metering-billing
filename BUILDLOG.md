@@ -260,3 +260,37 @@ verified the complete flow against PostgreSQL.
   historical prices.
 - Why empty months still produce statements.
 - Why the unique tenant-period constraint is required even with job checks.
+
+---
+
+## Stretch Goal - Mid-Cycle Upgrade Proration
+
+**Status: complete.**
+
+### What was built
+- Deterministic Free-to-Pro proration through the next UTC-month boundary.
+- Integer round-half-up calculations in micro-USD with exact boundary tests.
+- Immutable billing adjustments keyed uniquely by Stripe event ID.
+- Replay-safe handling regardless of whether Checkout or subscription events
+  arrive first.
+- Checkout billing-cycle anchoring so Stripe and the local ledger use the same
+  period.
+- Monthly statement integration with separately exposed adjustments.
+- Late adjustments roll into the next open statement instead of mutating a
+  finalized invoice.
+
+### Verification
+- Alembic added billing adjustments in revision `6f5d232a275d`.
+- `python -m pytest -q` reported 88 passing tests.
+- A live Stripe test-mode Checkout created one local adjustment and one Stripe
+  proration invoice line for a temporary tenant.
+- The local `7,376,990` micro-USD calculation rounded to 738 cents; Stripe's
+  invoice reported `amount_due=738`, `amount_paid=738`, and `total=738`.
+- Canceling the subscription produced the expected local `free canceled`
+  entitlement state.
+
+### Decisions to explain in my own words
+- Why Stripe and the local ledger must share the same billing-cycle boundary.
+- Why money is calculated with integers rather than floating point.
+- Why the adjustment is frozen and keyed by the source webhook event.
+- Why a late adjustment must not modify a finalized statement.

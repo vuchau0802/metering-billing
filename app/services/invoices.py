@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.models import Invoice, InvoiceLine
+from app.models import BillingAdjustment, Invoice, InvoiceLine
+from app.repositories import (
+    billing_adjustments as adjustments_repository,
+)
 from app.repositories import invoices as invoices_repository
 from app.repositories import tenants as tenants_repository
 from app.services.quotas import QuotaWindow, current_utc_month
@@ -120,12 +123,28 @@ def generate_monthly_invoice(
         period_start=period.start,
         period_end=period.end,
     )
+    adjustments = (
+        adjustments_repository.list_uninvoiced_for_statement(
+            db,
+            tenant_id=tenant_id,
+            period_end=period.end,
+        )
+    )
+    adjustment_total = sum(
+        adjustment.amount_microusd
+        for adjustment in adjustments
+    )
     invoice = invoices_repository.create_finalized_invoice(
         db,
         tenant_id=tenant_id,
         period_start=period.start,
         period_end=period.end,
         aggregates=aggregates,
+        adjustment_total_microusd=adjustment_total,
+    )
+    adjustments_repository.attach_to_invoice(
+        adjustments,
+        invoice_id=invoice.id,
     )
     db.commit()
 
@@ -147,7 +166,11 @@ def get_monthly_invoice(
     *,
     tenant_id: int,
     invoice_id: int,
-) -> tuple[Invoice, list[InvoiceLine]]:
+) -> tuple[
+    Invoice,
+    list[InvoiceLine],
+    list[BillingAdjustment],
+]:
     invoice = invoices_repository.get_for_tenant(
         db,
         invoice_id=invoice_id,
@@ -158,5 +181,9 @@ def get_monthly_invoice(
         raise InvoiceNotFoundError(invoice_id)
 
     lines = invoices_repository.list_lines(db, invoice.id)
+    adjustments = adjustments_repository.list_for_invoice(
+        db,
+        invoice.id,
+    )
 
-    return invoice, lines
+    return invoice, lines, adjustments

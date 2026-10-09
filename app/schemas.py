@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models import UsageType
+from app.models import PlanName, UsageType
 
 
 StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -149,5 +149,21 @@ class InvoiceSummaryResponse(BaseModel):
     generated_at: datetime
 
 
+class InvoiceAdjustmentResponse(BaseModel):
+    id: StrictPositiveInt
+    source_event_id: str
+    old_plan: PlanName
+    new_plan: PlanName
+    period_start: datetime
+    period_end: datetime
+    effective_at: datetime
+    old_monthly_price_microusd: StrictNonNegativeInt
+    new_monthly_price_microusd: StrictNonNegativeInt
+    amount_microusd: StrictNonNegativeInt
+    currency: Literal["usd"]
+
+
 class InvoiceDetailResponse(InvoiceSummaryResponse):
+    adjustment_microusd: StrictNonNegativeInt
     lines: list[InvoiceLineResponse]
+    adjustments: list[InvoiceAdjustmentResponse]
