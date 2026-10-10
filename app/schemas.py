@@ -3,7 +3,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models import PlanName, UsageType
+from app.models import (
+    PlanName,
+    SubscriptionStatus,
+    TenantStatus,
+    UsageType,
+)
 
 
 StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -103,6 +108,20 @@ class ErrorResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
+
+class AccountSubscriptionResponse(BaseModel):
+    status: SubscriptionStatus
+    current_period_start: datetime | None
+    current_period_end: datetime | None
+    cancel_at_period_end: bool
+
+
+class AccountResponse(BaseModel):
+    tenant_id: StrictPositiveInt
+    email: str | None
+    plan: PlanName
+    status: TenantStatus
+    subscription: AccountSubscriptionResponse | None
 
 class CheckoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

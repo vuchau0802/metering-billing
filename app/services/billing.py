@@ -8,11 +8,11 @@ from app.config import get_settings
 from app.models import PlanName, TenantStatus
 from app.repositories import tenants as tenants_repository
 from app.schemas import CheckoutResponse
+from app.services.quotas import current_utc_month
 from app.services.metering import (
     PaymentRequiredError,
     TenantNotFoundError,
 )
-from app.services.quotas import current_utc_month
 
 
 class BillingConfigurationError(Exception):
@@ -95,11 +95,11 @@ def create_checkout_session(
             }
         },
         "success_url": (
-            f"{settings.app_base_url}/billing/success"
+            f"{settings.frontend_base_url}/billing/success"
             "?session_id={CHECKOUT_SESSION_ID}"
         ),
         "cancel_url": (
-            f"{settings.app_base_url}/billing/cancel"
+            f"{settings.frontend_base_url}/billing/cancel"
         ),
     }
 

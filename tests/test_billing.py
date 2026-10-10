@@ -15,6 +15,7 @@ def test_checkout_aligns_subscription_to_utc_month(
         _env_file=None,
         stripe_secret_key="sk_test_example",
         app_base_url="http://localhost:8004",
+        frontend_base_url="http://localhost:5173",
     )
     tenant = SimpleNamespace(
         id=123,
@@ -80,6 +81,13 @@ def test_checkout_aligns_subscription_to_utc_month(
         .call_args.args[0]
     )
 
+    assert parameters["success_url"] == (
+        "http://localhost:5173/billing/success"
+        "?session_id={CHECKOUT_SESSION_ID}"
+    )
+    assert parameters["cancel_url"] == (
+        "http://localhost:5173/billing/cancel"
+    )
     assert parameters["subscription_data"] == {
         "billing_cycle_anchor": int(
             period.end.timestamp()

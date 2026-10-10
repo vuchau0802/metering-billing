@@ -23,6 +23,7 @@ from app.schemas import (
     InvoiceSummaryResponse,
     UsageResponse,
     WebhookResponse,
+    AccountResponse,
 )
 from app.services.metering import (
     IdempotencyConflictError,
@@ -44,6 +45,7 @@ from app.services.webhooks import (
     process_webhook,
 )
 from app.services.quotas import QuotaExceededError
+from app.repositories.subscriptions import get_latest_for_tenant
 from app.services.invoices import (
     InvoiceNotFoundError,
     get_monthly_invoice,
@@ -309,6 +311,45 @@ async def handle_invalid_webhook_payload(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+@app.get(
+    "/account/{tenant_id}",
+    response_model=AccountResponse,
+)
+def account(
+    tenant_id: int,
+    tenant_api_key: TenantApiKey = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    tenant = require_tenant_access(
+        db,
+        tenant_id=tenant_id,
+        api_key=tenant_api_key,
+    )
+    subscription = get_latest_for_tenant(db, tenant_id)
+
+    return {
+        "tenant_id": tenant.id,
+        "email": tenant.email,
+        "plan": tenant.plan,
+        "status": tenant.status,
+        "subscription": (
+            None
+            if subscription is None
+            else {
+                "status": subscription.status,
+                "current_period_start": (
+                    subscription.current_period_start
+                ),
+                "current_period_end": (
+                    subscription.current_period_end
+                ),
+                "cancel_at_period_end": (
+                    subscription.cancel_at_period_end
+                ),
+            }
+        ),
+    }
 
 @app.get(
     "/usage/{tenant_id}",

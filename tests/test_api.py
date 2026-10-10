@@ -324,6 +324,36 @@ def test_tenant_key_cannot_access_another_tenant(
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
 
+def test_account_returns_authenticated_tenant(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        f"/account/{ACTIVE_TENANT_ID}",
+        headers=tenant_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tenant_id": ACTIVE_TENANT_ID,
+        "email": "integration-active@example.com",
+        "plan": "free",
+        "status": "active",
+        "subscription": None,
+    }
+
+
+def test_account_rejects_another_tenants_key(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        f"/account/{PAST_DUE_TENANT_ID}",
+        headers=tenant_headers(ACTIVE_TENANT_KEY),
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
 def test_billing_success_redirect() -> None:
     with TestClient(app) as client:
         response = client.get(

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str | None = None
     stripe_pro_price_id: str | None = None
     app_base_url: str = "http://localhost:8004"
+    frontend_base_url: str = "http://localhost:5173"
 
     usage_alert_transport: Literal[
         "logging",

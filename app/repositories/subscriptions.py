@@ -21,6 +21,21 @@ def get_by_stripe_id(
 
     return db.scalar(statement)
 
+def get_latest_for_tenant(
+    db: Session,
+    tenant_id: int,
+) -> Subscription | None:
+    statement = (
+        select(Subscription)
+        .where(Subscription.tenant_id == tenant_id)
+        .order_by(
+            Subscription.created_at.desc(),
+            Subscription.id.desc(),
+        )
+        .limit(1)
+    )
+
+    return db.scalar(statement)
 
 def upsert_subscription(
     db: Session,
