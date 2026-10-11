@@ -211,6 +211,42 @@ python -m compileall app tests run.py
 python -m pytest -q
 ```
 
+## React billing dashboard
+
+The React and TypeScript customer dashboard lives in `frontend/`. It provides
+tenant authentication, subscription status, quota progress, current and
+projected costs, overage visibility, finalized invoice history and detail, and
+Stripe Checkout return screens.
+
+Start FastAPI first:
+
+```powershell
+python run.py
+```
+
+In a second terminal, start Vite:
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. During development, Vite proxies `/api` requests
+to FastAPI on `http://localhost:8004`.
+
+Run the frontend verification commands from `frontend/`:
+
+```powershell
+npm test
+npm run lint
+npm run build
+```
+
+Tenant credentials are stored only in the current browser tab using
+`sessionStorage`. A production deployment should replace API-key entry with
+server-managed sessions and secure HTTP-only cookies.
+
 ## Stripe test-mode billing
 
 Configure Stripe test mode in `.env` using values from the Stripe Dashboard:
@@ -220,6 +256,7 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_PRO_PRICE_ID=price_...
 APP_BASE_URL=http://localhost:8004
+FRONTEND_BASE_URL=http://localhost:5173
 ```
 
 Never commit `.env` or real Stripe credentials. Start local webhook forwarding
@@ -253,6 +290,7 @@ state. Processed Stripe event IDs provide replay-safe webhook handling.
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `GET` | `/account/{tenant_id}` | Read authenticated tenant and subscription status |
 | `POST` | `/billing/checkout` | Create a Stripe test-mode subscription Checkout Session |
 | `POST` | `/webhooks/stripe` | Verify and process Stripe webhook events |
 | `GET` | `/billing/success` | Checkout success redirect response |
@@ -295,5 +333,6 @@ Task Scheduler, cron, or a deployment platform's scheduled-job facility.
   scheduler in deployment.
 - The usage-alert worker is also a standalone command and requires an external
   scheduler. SMTP delivery depends on a separately managed mail provider.
-- Billing success and cancellation endpoints return JSON rather than a
-  customer-facing frontend.
+- The development dashboard stores tenant API keys in `sessionStorage`;
+  production authentication requires server-managed sessions and secure
+  HTTP-only cookies.

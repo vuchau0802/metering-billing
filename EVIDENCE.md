@@ -425,3 +425,69 @@ The local calculation therefore matched Stripe to the cent. Canceling the test
 subscription produced `tenant: free canceled` and `subscription: canceled`.
 The temporary tenant, subscription, and adjustment rows were removed after the
 probe.
+
+---
+
+## React Billing Dashboard Evidence
+
+Date verified: 2026-10-10
+
+### Automated verification
+
+Frontend commands:
+
+```text
+npm test
+npm run lint
+npm run build
+```
+
+Results:
+
+```text
+Test Files  5 passed (5)
+Tests       13 passed (13)
+ESLint      passed
+Vite build  passed; 1960 modules transformed
+```
+
+The production bundle generated `dist/index.html`, an 11.38 kB stylesheet, and
+a 318.39 kB JavaScript bundle before gzip. A clean `npm ci` installed and
+audited 168 packages with zero known vulnerabilities.
+
+Backend commands:
+
+```text
+python -m compileall app tests
+python -m pytest -q
+```
+
+Result: `90 passed in 2.15s`.
+
+### Covered frontend behavior
+
+- UTC date and micro-USD formatting.
+- Valid, invalid, cleared, and malformed browser-session credentials.
+- Normalized credential submission and accessible authentication errors.
+- Checkout success and cancellation routes, including the Stripe session
+  reference on success.
+- Dashboard rendering from mocked account, usage, quota, cost, and invoice
+  responses.
+- Authenticated invoice navigation.
+
+### Manual UI probe
+
+Tenant 1 authenticated through the Vite proxy and displayed its Pro plan,
+active subscription, renewal date, current and projected costs, API-call and
+AI-token quota meters, and one finalized invoice. UTC formatting displayed the
+current period as October 1 through November 1 and the invoice period as
+September 1 through October 1.
+
+Opening `INV-00005` displayed the finalized statement, summary totals,
+generation date, and the correct empty-usage state. The React routes
+`/billing/success?session_id=cs_test_example` and `/billing/cancel` displayed
+their corresponding Checkout outcomes and returned to the dashboard.
+
+Conclusion: the billing backend is represented by a typed, authenticated React
+workflow, and both backend and frontend verification run deterministically in
+GitHub Actions.

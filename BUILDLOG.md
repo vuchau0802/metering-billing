@@ -294,3 +294,48 @@ verified the complete flow against PostgreSQL.
 - Why money is calculated with integers rather than floating point.
 - Why the adjustment is frozen and keyed by the source webhook event.
 - Why a late adjustment must not modify a finalized statement.
+
+---
+
+## Frontend - React Billing Dashboard
+
+**Status: complete.**
+
+### What was built
+- A Vite, React, and TypeScript customer billing dashboard.
+- Session-scoped tenant credential handling with authenticated API requests.
+- A typed API client for account, usage, invoices, invoice detail, and Stripe
+  Checkout creation.
+- Live plan and subscription state, quota meters, current spend, projected
+  spend, overage charges, and finalized invoice count.
+- Invoice history and detail views with usage and proration line items.
+- Stripe Checkout success and cancellation screens.
+- UTC-safe date and integer micro-USD formatting.
+- Responsive layouts for the connection screen, dashboard, tables, and invoice
+  detail views.
+- A dedicated GitHub Actions frontend job using a clean npm install, tests,
+  lint, and production build.
+
+### Backend support
+- Added authenticated `GET /account/{tenant_id}` without exposing API-key
+  hashes or Stripe credentials.
+- Added `FRONTEND_BASE_URL` so new Checkout Sessions return to React while
+  verified webhooks remain the source of truth for subscription state.
+- Preserved UTC-month billing anchoring and Stripe proration behavior.
+
+### Verification
+- `python -m pytest -q` reported 90 passing backend tests.
+- `npm test` reported 13 passing frontend tests across five files.
+- `npm run lint` completed without errors.
+- `npm run build` produced a successful Vite production bundle.
+- `npm ci` audited 168 packages with zero vulnerabilities.
+- Manual probes loaded the authenticated dashboard, corrected UTC dates,
+  invoice detail, and both Checkout result screens.
+
+### Decisions to explain in my own words
+- Why browser credentials use `sessionStorage` only for this local portfolio
+  application and should become HTTP-only sessions in production.
+- Why the UI consumes a typed API boundary instead of embedding fetch calls in
+  visual components.
+- Why Stripe webhooks, not the success page, activate the subscription.
+- Why billing dates are explicitly formatted in UTC.
