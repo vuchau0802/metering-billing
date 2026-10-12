@@ -5,6 +5,8 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -311,6 +313,28 @@ async def handle_invalid_webhook_payload(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness(db: Session = Depends(get_db)) -> Response:
+    try:
+        db.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unavailable",
+                "database": "unavailable",
+            },
+        )
+
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "database": "ok",
+        }
+    )
+
 
 @app.get(
     "/account/{tenant_id}",

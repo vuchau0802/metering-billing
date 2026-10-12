@@ -1,6 +1,6 @@
 from functools import lru_cache
 from typing import Literal
-
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 UNITS_PER_PRICE_BLOCK = 1_000
@@ -17,9 +17,18 @@ PRO_MONTHLY_PRICE_MICROUSD = 10_000_000
 
 class Settings(BaseSettings):
     database_url: str = (
-        "postgresql+psycopg://postgres:postgres@localhost:5432/metering"
+    "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/metering"
     )
-
+    database_pool_size: int = Field(default=5, ge=1)
+    database_max_overflow: int = Field(default=10, ge=0)
+    database_pool_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+    )
+    database_pool_recycle_seconds: int = Field(
+        default=1_800,
+        ge=1,
+    )
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None
     stripe_pro_price_id: str | None = None

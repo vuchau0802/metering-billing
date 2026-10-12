@@ -3,9 +3,10 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth import hash_tenant_api_key
-from app.db import SessionLocal
+from app.db import SessionLocal, get_db
 from app.main import app
 from app.models import (
     Plan,
@@ -149,6 +150,52 @@ def idempotency_headers(
         "Idempotency-Key": str(uuid4()),
         **tenant_headers(tenant_key),
     }
+
+
+def test_health_reports_process_status(
+    client: TestClient,
+) -> None:
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_readiness_reports_database_status(
+    client: TestClient,
+) -> None:
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "database": "ok",
+    }
+
+
+def test_readiness_returns_503_when_database_is_unavailable(
+    client: TestClient,
+) -> None:
+    class UnavailableDatabase:
+        def execute(self, statement: object) -> None:
+            raise SQLAlchemyError("private database details")
+
+    def unavailable_database():
+        yield UnavailableDatabase()
+
+    app.dependency_overrides[get_db] = unavailable_database
+
+    try:
+        response = client.get("/ready")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "unavailable",
+        "database": "unavailable",
+    }
+    assert "private database details" not in response.text
 
 
 def test_duplicate_request_creates_one_event(
