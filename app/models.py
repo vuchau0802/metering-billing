@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum as SqlEnum,
     ForeignKey,
@@ -75,6 +76,16 @@ usage_type_enum = SqlEnum(
 
 class Plan(Base):
     __tablename__ = "plans"
+    __table_args__ = (
+        CheckConstraint(
+            "api_calls_limit > 0",
+            name="ck_plans_api_calls_limit_positive",
+        ),
+        CheckConstraint(
+            "ai_tokens_limit > 0",
+            name="ck_plans_ai_tokens_limit_positive",
+        ),
+    )
 
     name: Mapped[PlanName] = mapped_column(plan_name_type, primary_key=True)
     api_calls_limit: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -135,6 +146,27 @@ class Tenant(Base):
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
+    __table_args__ = (
+        CheckConstraint(
+            """
+            (
+                current_period_start IS NULL
+                AND current_period_end IS NULL
+            )
+            OR
+            (
+                current_period_start IS NOT NULL
+                AND current_period_end IS NOT NULL
+                AND current_period_end > current_period_start
+            )
+            """,
+            name="ck_subscriptions_valid_period",
+        ),
+        CheckConstraint(
+            "last_stripe_event_created >= 0",
+            name="ck_subscriptions_event_created_nonnegative",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(
@@ -200,6 +232,25 @@ class UsageEvent(Base):
             "tenant_id",
             "usage_type",
             "created_at",
+        ),
+        CheckConstraint(
+            "quantity > 0",
+            name="ck_usage_events_quantity_positive",
+        ),
+        CheckConstraint(
+            """
+            overage_quantity >= 0
+            AND overage_quantity <= quantity
+            """,
+            name="ck_usage_events_valid_overage_quantity",
+        ),
+        CheckConstraint(
+            "overage_cost_microusd >= 0",
+            name="ck_usage_events_overage_cost_nonnegative",
+        ),
+        CheckConstraint(
+            "cost_microusd >= overage_cost_microusd",
+            name="ck_usage_events_valid_cost",
         ),
     )
 
@@ -279,6 +330,30 @@ class UsageAlert(Base):
             "status",
             "created_at",
         ),
+        CheckConstraint(
+            "window_end > window_start",
+            name="ck_usage_alerts_valid_window",
+        ),
+        CheckConstraint(
+            "threshold_percent IN (80, 100)",
+            name="ck_usage_alerts_supported_threshold",
+        ),
+        CheckConstraint(
+            "used >= 0",
+            name="ck_usage_alerts_used_nonnegative",
+        ),
+        CheckConstraint(
+            '"limit" > 0',
+            name="ck_usage_alerts_limit_positive",
+        ),
+        CheckConstraint(
+            "attempts >= 0",
+            name="ck_usage_alerts_attempts_nonnegative",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed')",
+            name="ck_usage_alerts_supported_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(
@@ -353,6 +428,22 @@ class Invoice(Base):
             "tenant_id",
             "period_start",
         ),
+        CheckConstraint(
+            "period_end > period_start",
+            name="ck_invoices_valid_period",
+        ),
+        CheckConstraint(
+            "currency = 'usd'",
+            name="ck_invoices_supported_currency",
+        ),
+        CheckConstraint(
+            "subtotal_microusd >= 0",
+            name="ck_invoices_subtotal_nonnegative",
+        ),
+        CheckConstraint(
+            "overage_cost_microusd >= 0",
+            name="ck_invoices_overage_cost_nonnegative",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -407,6 +498,36 @@ class InvoiceLine(Base):
             "usage_type",
             name="uq_invoice_line_usage_type",
         ),
+        CheckConstraint(
+            "event_count > 0",
+            name="ck_invoice_lines_event_count_positive",
+        ),
+        CheckConstraint(
+            "quantity > 0",
+            name="ck_invoice_lines_quantity_positive",
+        ),
+        CheckConstraint(
+            """
+            overage_quantity >= 0
+            AND overage_quantity <= quantity
+            """,
+            name="ck_invoice_lines_valid_overage_quantity",
+        ),
+        CheckConstraint(
+            "subtotal_microusd >= 0",
+            name="ck_invoice_lines_subtotal_nonnegative",
+        ),
+        CheckConstraint(
+            "overage_cost_microusd >= 0",
+            name="ck_invoice_lines_overage_cost_nonnegative",
+        ),
+        CheckConstraint(
+            """
+            total_microusd
+            = subtotal_microusd + overage_cost_microusd
+            """,
+            name="ck_invoice_lines_valid_total",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -456,6 +577,29 @@ class BillingAdjustment(Base):
             "ix_billing_adjustments_tenant_period",
             "tenant_id",
             "period_start",
+        ),
+        CheckConstraint(
+            "period_end > period_start",
+            name="ck_billing_adjustments_valid_period",
+        ),
+        CheckConstraint(
+            """
+            effective_at >= period_start
+            AND effective_at < period_end
+            """,
+            name="ck_billing_adjustments_effective_in_period",
+        ),
+        CheckConstraint(
+            "old_monthly_price_microusd >= 0",
+            name="ck_billing_adjustments_old_price_nonnegative",
+        ),
+        CheckConstraint(
+            "new_monthly_price_microusd >= 0",
+            name="ck_billing_adjustments_new_price_nonnegative",
+        ),
+        CheckConstraint(
+            "currency = 'usd'",
+            name="ck_billing_adjustments_supported_currency",
         ),
     )
 
