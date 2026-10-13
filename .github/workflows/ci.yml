@@ -53,8 +53,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Verify single migration head
+        run: python scripts/check_migration_heads.py
+
       - name: Apply database migrations
         run: python -m alembic upgrade head
+
+      - name: Check model and database schema drift
+        run: python -m alembic check
+
+      - name: Test latest migration downgrade and re-upgrade
+        run: |
+          python -m alembic downgrade -1
+          python -m alembic upgrade head
+          python -m alembic check
 
       - name: Compile Python sources
         run: python -m compileall app tests run.py
