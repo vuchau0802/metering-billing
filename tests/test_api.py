@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth import hash_tenant_api_key
 from app.db import SessionLocal, get_db
@@ -17,6 +17,8 @@ from app.models import (
     UsageEvent,
     UsageType,
 )
+from app.services import metering
+from app.services.quotas import current_utc_month
 
 
 ACTIVE_TENANT_ID = 900_001
@@ -230,6 +232,131 @@ def test_duplicate_request_creates_one_event(
         )
 
     assert event_count == 1
+
+
+def test_existing_alert_does_not_rollback_usage_event(
+    client: TestClient,
+) -> None:
+    window = current_utc_month()
+
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                UsageEvent(
+                    tenant_id=ACTIVE_TENANT_ID,
+                    idempotency_key="alert-conflict-seed",
+                    usage_type=UsageType.AI_TOKENS,
+                    quantity=79_999,
+                    token_breakdown={
+                        "input": 79_999,
+                        "cached_input": 0,
+                        "output": 0,
+                        "reasoning": 0,
+                    },
+                    overage_quantity=0,
+                    overage_cost_microusd=0,
+                    cost_microusd=11_999_850,
+                    response_snapshot={},
+                ),
+                UsageAlert(
+                    tenant_id=ACTIVE_TENANT_ID,
+                    usage_type=UsageType.AI_TOKENS,
+                    window_start=window.start,
+                    window_end=window.end,
+                    threshold_percent=80,
+                    used=80_123,
+                    limit=100_000,
+                ),
+            ]
+        )
+        db.commit()
+
+    headers = idempotency_headers()
+    response = client.post(
+        "/generate",
+        headers=headers,
+        json={
+            "tenant_id": ACTIVE_TENANT_ID,
+            "input_tokens": 1,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_tokens": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["usage"]["used"] == 80_000
+
+    with SessionLocal() as db:
+        event_count = db.scalar(
+            select(func.count(UsageEvent.id)).where(
+                UsageEvent.idempotency_key
+                == headers["Idempotency-Key"]
+            )
+        )
+        alert = db.scalar(
+            select(UsageAlert).where(
+                UsageAlert.tenant_id == ACTIVE_TENANT_ID,
+                UsageAlert.usage_type == UsageType.AI_TOKENS,
+                UsageAlert.window_start == window.start,
+                UsageAlert.threshold_percent == 80,
+            )
+        )
+
+    assert event_count == 1
+    assert alert is not None
+    assert alert.used == 80_123
+
+
+def test_non_idempotency_integrity_error_is_not_replayed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_error = RuntimeError("alert insert failed")
+    original_error.diag = type(
+        "Diagnostic",
+        (),
+        {"constraint_name": "uq_usage_alert_threshold"},
+    )()
+    integrity_error = IntegrityError(
+        "INSERT",
+        {},
+        original_error,
+    )
+
+    def fail_alert_insert(*args: object, **kwargs: object) -> None:
+        raise integrity_error
+
+    monkeypatch.setattr(
+        metering.usage_alerts_repository,
+        "create_threshold_alerts",
+        fail_alert_insert,
+    )
+
+    headers = idempotency_headers()
+
+    with pytest.raises(IntegrityError):
+        client.post(
+            "/generate",
+            headers=headers,
+            json={
+                "tenant_id": ACTIVE_TENANT_ID,
+                "input_tokens": 80_000,
+                "cached_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+            },
+        )
+
+    with SessionLocal() as db:
+        event_count = db.scalar(
+            select(func.count(UsageEvent.id)).where(
+                UsageEvent.idempotency_key
+                == headers["Idempotency-Key"]
+            )
+        )
+
+    assert event_count == 0
 
 
 def test_exact_quota_then_next_request_is_rejected(

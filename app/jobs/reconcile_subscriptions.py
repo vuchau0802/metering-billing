@@ -24,12 +24,14 @@ class ReconciliationResult:
 
 def _reconcile_one(
     client: StripeClient,
-    stripe_subscription_id: str,
+    target: subscriptions.ReconciliationTarget,
     *,
     max_attempts: int,
     base_delay_seconds: float,
     sleep: Callable[[float], None],
 ) -> bool:
+    stripe_subscription_id = target.stripe_subscription_id
+
     for attempt in range(1, max_attempts + 1):
         try:
             stripe_subscription = (
@@ -39,16 +41,27 @@ def _reconcile_one(
             )
 
             with SessionLocal() as db:
-                synchronize_subscription(
+                synchronized = synchronize_subscription(
                     db,
                     stripe_subscription.to_dict(),
+                    expected_last_stripe_event_created=(
+                        target.last_stripe_event_created
+                    ),
                 )
                 db.commit()
 
-            logger.info(
-                "Reconciled Stripe subscription %s",
-                stripe_subscription_id,
-            )
+            if synchronized:
+                logger.info(
+                    "Reconciled Stripe subscription %s",
+                    stripe_subscription_id,
+                )
+            else:
+                logger.info(
+                    "Skipped Stripe subscription %s because "
+                    "local webhook state changed during fetch",
+                    stripe_subscription_id,
+                )
+
             return True
         except Exception:
             if attempt == max_attempts:
@@ -105,17 +118,17 @@ def run_reconciliation(
         )
 
     with SessionLocal() as db:
-        subscription_ids = (
-            subscriptions.list_reconcilable_ids(db)
+        targets = (
+            subscriptions.list_reconcilable_targets(db)
         )
 
     succeeded = 0
     failed = 0
 
-    for stripe_subscription_id in subscription_ids:
+    for target in targets:
         reconciled = _reconcile_one(
             client,
-            stripe_subscription_id,
+            target,
             max_attempts=max_attempts,
             base_delay_seconds=base_delay_seconds,
             sleep=sleep,
@@ -127,7 +140,7 @@ def run_reconciliation(
             failed += 1
 
     return ReconciliationResult(
-        checked=len(subscription_ids),
+        checked=len(targets),
         succeeded=succeeded,
         failed=failed,
     )

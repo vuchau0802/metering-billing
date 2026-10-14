@@ -19,6 +19,7 @@ from app.models import (
     Tenant,
     TenantStatus,
 )
+from app.services.webhooks import synchronize_subscription
 
 
 WEBHOOK_SECRET = "whsec_automated_test_secret"
@@ -33,6 +34,9 @@ SUBSCRIPTION_ID = "sub_test_lifecycle"
 ORDERING_TENANT_ID = 9003
 ORDERING_CUSTOMER_ID = "cus_test_ordering"
 ORDERING_SUBSCRIPTION_ID = "sub_test_ordering"
+RECONCILIATION_TENANT_ID = 9004
+RECONCILIATION_CUSTOMER_ID = "cus_test_reconciliation_race"
+RECONCILIATION_SUBSCRIPTION_ID = "sub_test_reconciliation_race"
 
 SUBSCRIPTION_EVENT_IDS = [
     "evt_test_subscription_created",
@@ -664,6 +668,129 @@ def test_stale_subscription_event_cannot_resurrect_canceled_tenant(
             db.execute(
                 delete(Tenant).where(
                     Tenant.id == ORDERING_TENANT_ID
+                )
+            )
+            db.commit()
+
+
+def test_reconciliation_compare_and_swap_preserves_webhook_state() -> None:
+    with SessionLocal() as db:
+        db.execute(
+            delete(Subscription).where(
+                Subscription.stripe_subscription_id
+                == RECONCILIATION_SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
+            delete(Tenant).where(
+                Tenant.id == RECONCILIATION_TENANT_ID
+            )
+        )
+        db.add(
+            Tenant(
+                id=RECONCILIATION_TENANT_ID,
+                email="reconciliation-race@example.com",
+                plan=PlanName.FREE,
+                status=TenantStatus.CANCELED,
+                stripe_customer_id=RECONCILIATION_CUSTOMER_ID,
+            )
+        )
+        db.flush()
+        db.add(
+            Subscription(
+                tenant_id=RECONCILIATION_TENANT_ID,
+                stripe_subscription_id=(
+                    RECONCILIATION_SUBSCRIPTION_ID
+                ),
+                stripe_customer_id=RECONCILIATION_CUSTOMER_ID,
+                plan_name=PlanName.PRO,
+                status=SubscriptionStatus.CANCELED,
+                current_period_start=None,
+                current_period_end=None,
+                cancel_at_period_end=False,
+                last_stripe_event_created=2_000_000_200,
+            )
+        )
+        db.commit()
+
+    stripe_snapshot = {
+        "id": RECONCILIATION_SUBSCRIPTION_ID,
+        "customer": RECONCILIATION_CUSTOMER_ID,
+        "status": "active",
+        "metadata": {
+            "tenant_id": str(RECONCILIATION_TENANT_ID),
+        },
+        "items": {"data": []},
+        "cancel_at_period_end": False,
+    }
+
+    try:
+        with SessionLocal() as db:
+            applied = synchronize_subscription(
+                db,
+                stripe_snapshot,
+                expected_last_stripe_event_created=(
+                    2_000_000_100
+                ),
+            )
+            db.commit()
+
+        assert applied is False
+
+        with SessionLocal() as db:
+            tenant = db.get(Tenant, RECONCILIATION_TENANT_ID)
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == RECONCILIATION_SUBSCRIPTION_ID
+                )
+            )
+
+            assert tenant is not None
+            assert tenant.plan == PlanName.FREE
+            assert tenant.status == TenantStatus.CANCELED
+            assert subscription is not None
+            assert subscription.status == SubscriptionStatus.CANCELED
+            assert subscription.last_stripe_event_created == 2_000_000_200
+
+        with SessionLocal() as db:
+            applied = synchronize_subscription(
+                db,
+                stripe_snapshot,
+                expected_last_stripe_event_created=(
+                    2_000_000_200
+                ),
+            )
+            db.commit()
+
+        assert applied is True
+
+        with SessionLocal() as db:
+            tenant = db.get(Tenant, RECONCILIATION_TENANT_ID)
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == RECONCILIATION_SUBSCRIPTION_ID
+                )
+            )
+
+            assert tenant is not None
+            assert tenant.plan == PlanName.PRO
+            assert tenant.status == TenantStatus.ACTIVE
+            assert subscription is not None
+            assert subscription.status == SubscriptionStatus.ACTIVE
+            assert subscription.last_stripe_event_created == 2_000_000_200
+    finally:
+        with SessionLocal() as db:
+            db.execute(
+                delete(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == RECONCILIATION_SUBSCRIPTION_ID
+                )
+            )
+            db.execute(
+                delete(Tenant).where(
+                    Tenant.id == RECONCILIATION_TENANT_ID
                 )
             )
             db.commit()

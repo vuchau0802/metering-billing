@@ -73,8 +73,29 @@ def build_client(
 
 def prepare_job(
     monkeypatch: pytest.MonkeyPatch,
-) -> list[dict[str, Any]]:
-    synchronized: list[dict[str, Any]] = []
+    *,
+    synchronization_result: bool = True,
+) -> list[tuple[dict[str, Any], int]]:
+    synchronized: list[tuple[dict[str, Any], int]] = []
+
+    target = reconciliation.subscriptions.ReconciliationTarget(
+        stripe_subscription_id="sub_test_reconciliation",
+        last_stripe_event_created=1_700_000_123,
+    )
+
+    def synchronize(
+        db: Any,
+        payload: dict[str, Any],
+        *,
+        expected_last_stripe_event_created: int,
+    ) -> bool:
+        synchronized.append(
+            (
+                payload,
+                expected_last_stripe_event_created,
+            )
+        )
+        return synchronization_result
 
     monkeypatch.setattr(
         reconciliation,
@@ -83,15 +104,13 @@ def prepare_job(
     )
     monkeypatch.setattr(
         reconciliation.subscriptions,
-        "list_reconcilable_ids",
-        lambda db: ["sub_test_reconciliation"],
+        "list_reconcilable_targets",
+        lambda db: [target],
     )
     monkeypatch.setattr(
         reconciliation,
         "synchronize_subscription",
-        lambda db, payload: synchronized.append(
-            payload
-        ),
+        synchronize,
     )
 
     return synchronized
@@ -124,6 +143,7 @@ def test_transient_failure_is_retried(
     assert service.calls == 2
     assert delays == [0.25]
     assert len(synchronized) == 1
+    assert synchronized[0][1] == 1_700_000_123
 
 
 def test_persistent_failure_stops_after_max_attempts(
@@ -154,6 +174,37 @@ def test_persistent_failure_stops_after_max_attempts(
     assert service.calls == 3
     assert delays == [0.5, 1.0]
     assert synchronized == []
+
+
+def test_changed_watermark_is_a_safe_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    synchronized = prepare_job(
+        monkeypatch,
+        synchronization_result=False,
+    )
+    service = FakeSubscriptionsService(
+        [FakeStripeSubscription()]
+    )
+    caplog.set_level(
+        logging.INFO,
+        logger=reconciliation.__name__,
+    )
+
+    result = reconciliation.run_reconciliation(
+        client=build_client(service),
+        max_attempts=3,
+        sleep=lambda delay: None,
+    )
+
+    assert result == reconciliation.ReconciliationResult(
+        checked=1,
+        succeeded=1,
+        failed=0,
+    )
+    assert synchronized[0][1] == 1_700_000_123
+    assert "local webhook state changed during fetch" in caplog.text
 
 
 def test_main_emits_alert_and_returns_failure(

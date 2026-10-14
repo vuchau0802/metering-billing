@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
@@ -10,6 +11,12 @@ from app.models import (
 )
 
 
+@dataclass(frozen=True)
+class ReconciliationTarget:
+    stripe_subscription_id: str
+    last_stripe_event_created: int
+
+
 def get_by_stripe_id(
     db: Session,
     stripe_subscription_id: str,
@@ -20,6 +27,7 @@ def get_by_stripe_id(
     )
 
     return db.scalar(statement)
+
 
 def get_latest_for_tenant(
     db: Session,
@@ -36,6 +44,7 @@ def get_latest_for_tenant(
     )
 
     return db.scalar(statement)
+
 
 def upsert_subscription(
     db: Session,
@@ -79,11 +88,15 @@ def upsert_subscription(
         subscription.last_stripe_event_created = last_stripe_event_created
     return subscription
 
-def list_reconcilable_ids(
+
+def list_reconcilable_targets(
     db: Session,
-) -> list[str]:
+) -> list[ReconciliationTarget]:
     statement = (
-        select(Subscription.stripe_subscription_id)
+        select(
+            Subscription.stripe_subscription_id,
+            Subscription.last_stripe_event_created,
+        )
         .where(
             Subscription.status
             != SubscriptionStatus.CANCELED
@@ -91,4 +104,10 @@ def list_reconcilable_ids(
         .order_by(Subscription.id)
     )
 
-    return list(db.scalars(statement))
+    return [
+        ReconciliationTarget(
+            stripe_subscription_id=row[0],
+            last_stripe_event_created=row[1],
+        )
+        for row in db.execute(statement)
+    ]

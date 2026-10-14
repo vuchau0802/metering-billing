@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models import UsageAlert, UsageType
@@ -15,23 +16,31 @@ def create_threshold_alerts(
     used: int,
     limit: int,
     thresholds: list[int],
-) -> list[UsageAlert]:
-    alerts = [
-        UsageAlert(
-            tenant_id=tenant_id,
-            usage_type=usage_type,
-            window_start=window_start,
-            window_end=window_end,
-            threshold_percent=threshold,
-            used=used,
-            limit=limit,
-        )
-        for threshold in thresholds
-    ]
+) -> None:
+    if not thresholds:
+        return
 
-    db.add_all(alerts)
+    statement = insert(UsageAlert).values(
+        [
+            {
+                "tenant_id": tenant_id,
+                "usage_type": usage_type,
+                "window_start": window_start,
+                "window_end": window_end,
+                "threshold_percent": threshold,
+                "used": used,
+                "limit": limit,
+                "status": "pending",
+                "attempts": 0,
+            }
+            for threshold in thresholds
+        ]
+    )
+    statement = statement.on_conflict_do_nothing(
+        constraint="uq_usage_alert_threshold",
+    )
 
-    return alerts
+    db.execute(statement)
 
 def get_next_pending_alert(
     db: Session,

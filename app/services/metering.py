@@ -27,6 +27,12 @@ from app.services.costs import (
 from app.services.quotas import check_quota, current_utc_month
 
 
+# This PostgreSQL-generated name is pinned by the initial migration.
+USAGE_EVENT_IDEMPOTENCY_CONSTRAINT = (
+    "usage_events_idempotency_key_key"
+)
+
+
 class TenantNotFoundError(Exception):
     def __init__(self, tenant_id: int) -> None:
         self.tenant_id = tenant_id
@@ -243,8 +249,17 @@ def _record_usage(
             response=response,
             replayed=False,
         )
-    except IntegrityError:
+    except IntegrityError as error:
         db.rollback()
+
+        constraint_name = getattr(
+            getattr(error.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+
+        if constraint_name != USAGE_EVENT_IDEMPOTENCY_CONSTRAINT:
+            raise
 
         existing = (
             usage_events_repository

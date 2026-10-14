@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-import time
 import stripe
 from sqlalchemy.orm import Session
 
@@ -241,6 +240,7 @@ def synchronize_subscription(
     *,
     stripe_event_id: str | None = None,
     stripe_event_created: int | None = None,
+    expected_last_stripe_event_created: int | None = None,
     deleted: bool = False,
 ) -> bool:
     stripe_subscription_id = subscription.get("id")
@@ -281,16 +281,31 @@ def synchronize_subscription(
 
     old_plan = tenant.plan
 
-    applied_event_created = (
-        int(time.time())
-        if stripe_event_created is None
-        else stripe_event_created
-    )
-
     existing = subscriptions_repository.get_by_stripe_id(
         db,
         stripe_subscription_id,
     )
+
+    if expected_last_stripe_event_created is not None:
+        if (
+            existing is None
+            or existing.last_stripe_event_created
+            != expected_last_stripe_event_created
+        ):
+            return False
+
+    # Reconciliation preserves the webhook watermark after its CAS check.
+    if stripe_event_created is None:
+        if existing is None:
+            raise InvalidWebhookPayloadError(
+                "Reconciliation cannot create an unknown subscription"
+            )
+
+        applied_event_created = (
+            existing.last_stripe_event_created
+        )
+    else:
+        applied_event_created = stripe_event_created
 
     if (
         existing is not None
