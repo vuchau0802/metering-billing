@@ -196,6 +196,22 @@ The seed command provisions development-only API keys for the demo tenants:
 Only SHA-256 hashes of these keys are stored. Replace them when provisioning
 real tenants; the checked-in values are strictly local development fixtures.
 
+Provision a key for a tenant that does not have one:
+
+```powershell
+python -m app.jobs.manage_tenant_api_key 123
+```
+
+Rotate an existing key explicitly:
+
+```powershell
+python -m app.jobs.manage_tenant_api_key 123 --rotate
+```
+
+The plaintext key is displayed once. Store it securely before closing the
+terminal; only its SHA-256 hash is retained in PostgreSQL, and rotation
+immediately invalidates the previous key.
+
 Start the API:
 
 ```powershell

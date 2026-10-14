@@ -37,6 +37,10 @@ ORDERING_SUBSCRIPTION_ID = "sub_test_ordering"
 RECONCILIATION_TENANT_ID = 9004
 RECONCILIATION_CUSTOMER_ID = "cus_test_reconciliation_race"
 RECONCILIATION_SUBSCRIPTION_ID = "sub_test_reconciliation_race"
+STALE_CHECKOUT_EVENT_ID = "evt_test_stale_checkout"
+STALE_CHECKOUT_TENANT_ID = 9005
+STALE_CHECKOUT_CUSTOMER_ID = "cus_test_stale_checkout"
+STALE_CHECKOUT_SUBSCRIPTION_ID = "sub_test_stale_checkout"
 
 SUBSCRIPTION_EVENT_IDS = [
     "evt_test_subscription_created",
@@ -80,27 +84,34 @@ def build_payload() -> bytes:
         separators=(",", ":"),
     ).encode("utf-8")
 
-def build_checkout_payload() -> bytes:
+def build_checkout_payload(
+    *,
+    event_id: str = CHECKOUT_EVENT_ID,
+    created: int | None = None,
+    tenant_id: int = CHECKOUT_TENANT_ID,
+    customer_id: str = CHECKOUT_CUSTOMER_ID,
+    subscription_id: str = CHECKOUT_SUBSCRIPTION_ID,
+) -> bytes:
     event = {
-        "id": CHECKOUT_EVENT_ID,
+        "id": event_id,
         "object": "event",
         "type": "checkout.session.completed",
-        "created": int(time.time()),
+        "created": (
+            int(time.time())
+            if created is None
+            else created
+        ),
         "livemode": False,
         "data": {
             "object": {
                 "id": "cs_test_phase3",
                 "object": "checkout.session",
                 "mode": "subscription",
-                "client_reference_id": str(
-                    CHECKOUT_TENANT_ID
-                ),
-                "customer": CHECKOUT_CUSTOMER_ID,
-                "subscription": CHECKOUT_SUBSCRIPTION_ID,
+                "client_reference_id": str(tenant_id),
+                "customer": customer_id,
+                "subscription": subscription_id,
                 "metadata": {
-                    "tenant_id": str(
-                        CHECKOUT_TENANT_ID
-                    ),
+                    "tenant_id": str(tenant_id),
                     "plan": "pro",
                 },
             }
@@ -219,7 +230,7 @@ def test_forged_signature_returns_400(
     )
 
 
-def test_replayed_event_is_processed_once(
+def test_unsupported_event_is_rejected_without_being_claimed(
     webhook_client: TestClient,
 ) -> None:
     payload = build_payload()
@@ -239,12 +250,17 @@ def test_replayed_event_is_processed_once(
         headers=headers,
     )
 
-    assert first.status_code == 200
-    assert first.json()["duplicate"] is False
-
-    assert second.status_code == 200
-    assert second.json()["duplicate"] is True
-    assert first.json()["event_type"] == "payment_intent.succeeded"
+    assert first.status_code == 400
+    assert second.status_code == 400
+    assert (
+        first.json()["error"]["code"]
+        == "invalid_webhook_payload"
+    )
+    assert (
+        first.json()["error"]["message"]
+        == "Unsupported Stripe event type: "
+        "payment_intent.succeeded"
+    )
 
     with SessionLocal() as db:
         count = db.scalar(
@@ -256,7 +272,7 @@ def test_replayed_event_is_processed_once(
             )
         )
 
-    assert count == 1
+    assert count == 0
 
 def test_checkout_completed_upgrades_tenant_to_pro(
     webhook_client: TestClient,
@@ -383,6 +399,140 @@ def test_checkout_completed_upgrades_tenant_to_pro(
                 )
             )
             db.commit()
+
+
+def test_stale_checkout_cannot_reactivate_canceled_tenant(
+    webhook_client: TestClient,
+) -> None:
+    with SessionLocal() as db:
+        db.execute(
+            delete(ProcessedWebhookEvent).where(
+                ProcessedWebhookEvent.stripe_event_id
+                == STALE_CHECKOUT_EVENT_ID
+            )
+        )
+        db.execute(
+            delete(Subscription).where(
+                Subscription.stripe_subscription_id
+                == STALE_CHECKOUT_SUBSCRIPTION_ID
+            )
+        )
+        db.execute(
+            delete(BillingAdjustment).where(
+                BillingAdjustment.tenant_id
+                == STALE_CHECKOUT_TENANT_ID
+            )
+        )
+        db.execute(
+            delete(Tenant).where(
+                Tenant.id == STALE_CHECKOUT_TENANT_ID
+            )
+        )
+        db.add(
+            Tenant(
+                id=STALE_CHECKOUT_TENANT_ID,
+                email="stale-checkout-test@example.com",
+                plan=PlanName.FREE,
+                status=TenantStatus.CANCELED,
+                stripe_customer_id=STALE_CHECKOUT_CUSTOMER_ID,
+            )
+        )
+        db.flush()
+        db.add(
+            Subscription(
+                tenant_id=STALE_CHECKOUT_TENANT_ID,
+                stripe_subscription_id=(
+                    STALE_CHECKOUT_SUBSCRIPTION_ID
+                ),
+                stripe_customer_id=STALE_CHECKOUT_CUSTOMER_ID,
+                plan_name=PlanName.PRO,
+                status=SubscriptionStatus.CANCELED,
+                current_period_start=None,
+                current_period_end=None,
+                cancel_at_period_end=False,
+                last_stripe_event_created=2_000_000_200,
+            )
+        )
+        db.commit()
+
+    try:
+        payload = build_checkout_payload(
+            event_id=STALE_CHECKOUT_EVENT_ID,
+            created=2_000_000_100,
+            tenant_id=STALE_CHECKOUT_TENANT_ID,
+            customer_id=STALE_CHECKOUT_CUSTOMER_ID,
+            subscription_id=STALE_CHECKOUT_SUBSCRIPTION_ID,
+        )
+        headers = {
+            "Stripe-Signature": sign_payload(payload),
+            "Content-Type": "application/json",
+        }
+
+        first = webhook_client.post(
+            "/webhooks/stripe",
+            content=payload,
+            headers=headers,
+        )
+        replay = webhook_client.post(
+            "/webhooks/stripe",
+            content=payload,
+            headers=headers,
+        )
+
+        assert first.status_code == 200
+        assert first.json()["duplicate"] is False
+        assert replay.status_code == 200
+        assert replay.json()["duplicate"] is True
+
+        with SessionLocal() as db:
+            tenant = db.get(Tenant, STALE_CHECKOUT_TENANT_ID)
+            subscription = db.scalar(
+                select(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == STALE_CHECKOUT_SUBSCRIPTION_ID
+                )
+            )
+            adjustment_count = db.scalar(
+                select(func.count(BillingAdjustment.id)).where(
+                    BillingAdjustment.source_event_id
+                    == STALE_CHECKOUT_EVENT_ID
+                )
+            )
+
+        assert tenant is not None
+        assert tenant.plan == PlanName.FREE
+        assert tenant.status == TenantStatus.CANCELED
+        assert subscription is not None
+        assert subscription.status == SubscriptionStatus.CANCELED
+        assert subscription.last_stripe_event_created == 2_000_000_200
+        assert adjustment_count == 0
+    finally:
+        with SessionLocal() as db:
+            db.execute(
+                delete(ProcessedWebhookEvent).where(
+                    ProcessedWebhookEvent.stripe_event_id
+                    == STALE_CHECKOUT_EVENT_ID
+                )
+            )
+            db.execute(
+                delete(Subscription).where(
+                    Subscription.stripe_subscription_id
+                    == STALE_CHECKOUT_SUBSCRIPTION_ID
+                )
+            )
+            db.execute(
+                delete(BillingAdjustment).where(
+                    BillingAdjustment.tenant_id
+                    == STALE_CHECKOUT_TENANT_ID
+                )
+            )
+            db.execute(
+                delete(Tenant).where(
+                    Tenant.id == STALE_CHECKOUT_TENANT_ID
+                )
+            )
+            db.commit()
+
 
 def test_subscription_lifecycle_updates_tenant_and_record(
     webhook_client: TestClient,

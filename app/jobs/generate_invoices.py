@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.repositories import tenants as tenants_repository
 from app.services.invoices import (
@@ -24,42 +25,66 @@ class InvoiceJobResult:
 def run_invoice_generation(
     *,
     now: datetime | None = None,
+    lookback_months: int | None = None,
 ) -> InvoiceJobResult:
+    if lookback_months is None:
+        lookback_months = get_settings().invoice_catchup_months
+
+    if lookback_months < 1:
+        raise ValueError("lookback_months must be at least 1")
+
+    periods = []
     period = previous_utc_month(now)
 
-    with SessionLocal() as db:
-        tenant_ids = tenants_repository.list_tenant_ids(db)
+    for _ in range(lookback_months):
+        periods.append(period)
+        period = previous_utc_month(period.start)
 
+    periods.reverse()
+
+    with SessionLocal() as db:
+        targets = (
+            tenants_repository
+            .list_invoice_generation_targets(db)
+        )
+
+    checked = 0
     created = 0
     existing = 0
     failed = 0
 
-    for tenant_id in tenant_ids:
-        try:
-            with SessionLocal() as db:
-                result = generate_monthly_invoice(
-                    db,
-                    tenant_id=tenant_id,
-                    year=period.start.year,
-                    month=period.start.month,
-                    now=now,
+    for target in targets:
+        for period in periods:
+            if period.end <= target.created_at:
+                continue
+
+            checked += 1
+
+            try:
+                with SessionLocal() as db:
+                    result = generate_monthly_invoice(
+                        db,
+                        tenant_id=target.tenant_id,
+                        year=period.start.year,
+                        month=period.start.month,
+                        now=now,
+                    )
+
+                if result.created:
+                    created += 1
+                else:
+                    existing += 1
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Invoice generation failed: tenant_id=%s "
+                    "period=%s",
+                    target.tenant_id,
+                    period.start.date(),
                 )
 
-            if result.created:
-                created += 1
-            else:
-                existing += 1
-        except Exception:
-            failed += 1
-            logger.exception(
-                "Invoice generation failed: tenant_id=%s "
-                "period=%s",
-                tenant_id,
-                period.start.date(),
-            )
-
     return InvoiceJobResult(
-        checked=len(tenant_ids),
+        checked=checked,
         created=created,
         existing=existing,
         failed=failed,

@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.config import Settings
 from app.models import PlanName, TenantStatus
 from app.services import billing
@@ -32,6 +34,17 @@ def test_checkout_aligns_subscription_to_utc_month(
         end=datetime(2026, 11, 1, tzinfo=UTC),
     )
     stripe_client = MagicMock()
+    stripe_client.v1.prices.retrieve.return_value = (
+        SimpleNamespace(
+            active=True,
+            currency="usd",
+            unit_amount=1_000,
+            recurring=SimpleNamespace(
+                interval="month",
+                interval_count=1,
+            ),
+        )
+    )
     stripe_client.v1.checkout.sessions.create.return_value = (
         SimpleNamespace(
             id="cs_test_proration",
@@ -76,6 +89,9 @@ def test_checkout_aligns_subscription_to_utc_month(
     stripe_client_class.assert_called_once_with(
         "sk_test_example"
     )
+    stripe_client.v1.prices.retrieve.assert_called_once_with(
+        "price_test_pro"
+    )
     parameters = (
         stripe_client.v1.checkout.sessions.create
         .call_args.args[0]
@@ -102,3 +118,52 @@ def test_checkout_aligns_subscription_to_utc_month(
         "billing@example.com"
     )
     assert response.session_id == "cs_test_proration"
+
+
+@pytest.mark.parametrize(
+    "price",
+    [
+        SimpleNamespace(
+            active=False,
+            currency="usd",
+            unit_amount=1_000,
+            recurring=SimpleNamespace(
+                interval="month",
+                interval_count=1,
+            ),
+        ),
+        SimpleNamespace(
+            active=True,
+            currency="eur",
+            unit_amount=1_000,
+            recurring=SimpleNamespace(
+                interval="month",
+                interval_count=1,
+            ),
+        ),
+        SimpleNamespace(
+            active=True,
+            currency="usd",
+            unit_amount=1_001,
+            recurring=SimpleNamespace(
+                interval="month",
+                interval_count=1,
+            ),
+        ),
+        SimpleNamespace(
+            active=True,
+            currency="usd",
+            unit_amount=1_000,
+            recurring=SimpleNamespace(
+                interval="year",
+                interval_count=1,
+            ),
+        ),
+    ],
+)
+def test_pro_price_must_match_local_plan(price) -> None:
+    with pytest.raises(
+        billing.BillingConfigurationError,
+        match="does not match the local Pro plan",
+    ):
+        billing._validate_pro_price(price)

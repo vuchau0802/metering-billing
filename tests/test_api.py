@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.auth import hash_tenant_api_key
 from app.db import SessionLocal, get_db
@@ -458,6 +459,76 @@ def test_reused_key_with_different_body_returns_409(
         conflict.json()["error"]["code"]
         == "idempotency_conflict"
     )
+
+
+def test_cross_tenant_idempotency_race_returns_409(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = str(uuid4())
+    first = client.post(
+        "/generate",
+        headers={
+            "Idempotency-Key": key,
+            **tenant_headers(),
+        },
+        json=VALID_BODY,
+    )
+
+    assert first.status_code == 200
+
+    original_get = (
+        metering.usage_events_repository
+        .get_by_idempotency_key
+    )
+    hidden_lookups = 2
+
+    def hide_existing_until_insert(
+        db: Session,
+        idempotency_key: str,
+    ) -> UsageEvent | None:
+        nonlocal hidden_lookups
+
+        if hidden_lookups:
+            hidden_lookups -= 1
+            return None
+
+        return original_get(db, idempotency_key)
+
+    monkeypatch.setattr(
+        metering.usage_events_repository,
+        "get_by_idempotency_key",
+        hide_existing_until_insert,
+    )
+
+    conflict = client.post(
+        "/generate",
+        headers={
+            "Idempotency-Key": key,
+            **tenant_headers(PRO_TENANT_KEY),
+        },
+        json={
+            **VALID_BODY,
+            "tenant_id": PRO_TENANT_ID,
+        },
+    )
+
+    assert conflict.status_code == 409
+    assert (
+        conflict.json()["error"]["code"]
+        == "idempotency_conflict"
+    )
+    assert hidden_lookups == 0
+
+    with SessionLocal() as db:
+        events = db.scalars(
+            select(UsageEvent).where(
+                UsageEvent.idempotency_key == key
+            )
+        ).all()
+
+    assert len(events) == 1
+    assert events[0].tenant_id == ACTIVE_TENANT_ID
 
 
 def test_invalid_input_returns_400(

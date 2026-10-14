@@ -138,6 +138,7 @@ def test_transient_failure_is_retried(
     assert result == reconciliation.ReconciliationResult(
         checked=1,
         succeeded=1,
+        skipped=0,
         failed=0,
     )
     assert service.calls == 2
@@ -169,6 +170,7 @@ def test_persistent_failure_stops_after_max_attempts(
     assert result == reconciliation.ReconciliationResult(
         checked=1,
         succeeded=0,
+        skipped=0,
         failed=1,
     )
     assert service.calls == 3
@@ -200,7 +202,8 @@ def test_changed_watermark_is_a_safe_skip(
 
     assert result == reconciliation.ReconciliationResult(
         checked=1,
-        succeeded=1,
+        succeeded=0,
+        skipped=1,
         failed=0,
     )
     assert synchronized[0][1] == 1_700_000_123
@@ -217,6 +220,7 @@ def test_main_emits_alert_and_returns_failure(
         lambda: reconciliation.ReconciliationResult(
             checked=2,
             succeeded=1,
+            skipped=0,
             failed=1,
         ),
     )

@@ -4,6 +4,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 UNITS_PER_PRICE_BLOCK = 1_000
+MICROUSD_PER_CENT = 10_000
 
 API_CALL_PRICE_PER_1K = 2_000
 INPUT_PRICE_PER_1K = 150_000
@@ -28,6 +29,11 @@ class Settings(BaseSettings):
     database_pool_recycle_seconds: int = Field(
         default=1_800,
         ge=1,
+    )
+    invoice_catchup_months: int = Field(
+        default=12,
+        ge=1,
+        le=120,
     )
     stripe_secret_key: str | None = None
     stripe_webhook_secret: str | None = None

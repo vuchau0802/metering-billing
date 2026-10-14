@@ -22,6 +22,7 @@ from app.models import (
     UsageEvent,
     UsageType,
 )
+from app.repositories.tenants import InvoiceGenerationTarget
 from app.services.invoices import (
     InvoicePeriodError,
     generate_monthly_invoice,
@@ -31,6 +32,8 @@ from app.services.proration import record_upgrade_proration
 
 TENANT_ID = 930_001
 TENANT_KEY = "invoice-test-key"
+JULY_START = datetime(2026, 7, 1, tzinfo=UTC)
+AUGUST_START = datetime(2026, 8, 1, tzinfo=UTC)
 SEPTEMBER_START = datetime(2026, 9, 1, tzinfo=UTC)
 OCTOBER_START = datetime(2026, 10, 1, tzinfo=UTC)
 NOVEMBER_START = datetime(2026, 11, 1, tzinfo=UTC)
@@ -94,6 +97,7 @@ def invoice_test_data():
                 plan=PlanName.PRO,
                 status=TenantStatus.ACTIVE,
                 api_key_hash=hash_tenant_api_key(TENANT_KEY),
+                created_at=SEPTEMBER_START,
             )
         )
         db.commit()
@@ -336,8 +340,13 @@ def test_monthly_job_is_safe_to_rerun(
 ) -> None:
     monkeypatch.setattr(
         "app.jobs.generate_invoices."
-        "tenants_repository.list_tenant_ids",
-        lambda db: [TENANT_ID],
+        "tenants_repository.list_invoice_generation_targets",
+        lambda db: [
+            InvoiceGenerationTarget(
+                tenant_id=TENANT_ID,
+                created_at=SEPTEMBER_START,
+            )
+        ],
     )
 
     first = run_invoice_generation(now=NOW)
@@ -355,6 +364,53 @@ def test_monthly_job_is_safe_to_rerun(
         existing=1,
         failed=0,
     )
+
+
+def test_monthly_job_catches_up_missed_periods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.jobs.generate_invoices."
+        "tenants_repository.list_invoice_generation_targets",
+        lambda db: [
+            InvoiceGenerationTarget(
+                tenant_id=TENANT_ID,
+                created_at=datetime(
+                    2026,
+                    7,
+                    15,
+                    tzinfo=UTC,
+                ),
+            )
+        ],
+    )
+
+    result = run_invoice_generation(
+        now=NOW,
+        lookback_months=3,
+    )
+
+    assert result == InvoiceJobResult(
+        checked=3,
+        created=3,
+        existing=0,
+        failed=0,
+    )
+
+    with SessionLocal() as db:
+        periods = list(
+            db.scalars(
+                select(Invoice.period_start)
+                .where(Invoice.tenant_id == TENANT_ID)
+                .order_by(Invoice.period_start)
+            )
+        )
+
+    assert periods == [
+        JULY_START,
+        AUGUST_START,
+        SEPTEMBER_START,
+    ]
 
 
 def test_invoice_includes_proration_adjustment() -> None:

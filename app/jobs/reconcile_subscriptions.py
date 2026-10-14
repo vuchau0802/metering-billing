@@ -2,6 +2,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from stripe import StripeClient
 
@@ -19,7 +20,14 @@ logger = logging.getLogger(__name__)
 class ReconciliationResult:
     checked: int
     succeeded: int
+    skipped: int
     failed: int
+
+
+class ReconciliationOutcome(Enum):
+    SUCCEEDED = "succeeded"
+    SKIPPED = "skipped"
+    FAILED = "failed"
 
 
 def _reconcile_one(
@@ -29,7 +37,7 @@ def _reconcile_one(
     max_attempts: int,
     base_delay_seconds: float,
     sleep: Callable[[float], None],
-) -> bool:
+) -> ReconciliationOutcome:
     stripe_subscription_id = target.stripe_subscription_id
 
     for attempt in range(1, max_attempts + 1):
@@ -55,14 +63,14 @@ def _reconcile_one(
                     "Reconciled Stripe subscription %s",
                     stripe_subscription_id,
                 )
+                return ReconciliationOutcome.SUCCEEDED
             else:
                 logger.info(
                     "Skipped Stripe subscription %s because "
                     "local webhook state changed during fetch",
                     stripe_subscription_id,
                 )
-
-            return True
+                return ReconciliationOutcome.SKIPPED
         except Exception:
             if attempt == max_attempts:
                 logger.exception(
@@ -71,7 +79,7 @@ def _reconcile_one(
                     stripe_subscription_id,
                     max_attempts,
                 )
-                return False
+                return ReconciliationOutcome.FAILED
 
             delay = base_delay_seconds * (
                 2 ** (attempt - 1)
@@ -87,7 +95,7 @@ def _reconcile_one(
             )
             sleep(delay)
 
-    return False
+    return ReconciliationOutcome.FAILED
 
 
 def run_reconciliation(
@@ -123,10 +131,11 @@ def run_reconciliation(
         )
 
     succeeded = 0
+    skipped = 0
     failed = 0
 
     for target in targets:
-        reconciled = _reconcile_one(
+        outcome = _reconcile_one(
             client,
             target,
             max_attempts=max_attempts,
@@ -134,14 +143,17 @@ def run_reconciliation(
             sleep=sleep,
         )
 
-        if reconciled:
+        if outcome is ReconciliationOutcome.SUCCEEDED:
             succeeded += 1
+        elif outcome is ReconciliationOutcome.SKIPPED:
+            skipped += 1
         else:
             failed += 1
 
     return ReconciliationResult(
         checked=len(targets),
         succeeded=succeeded,
+        skipped=skipped,
         failed=failed,
     )
 
@@ -165,9 +177,10 @@ def main() -> int:
 
     logger.info(
         "Reconciliation complete: checked=%s "
-        "succeeded=%s failed=%s",
+        "succeeded=%s skipped=%s failed=%s",
         result.checked,
         result.succeeded,
+        result.skipped,
         result.failed,
     )
 

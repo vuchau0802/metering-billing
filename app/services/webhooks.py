@@ -29,6 +29,16 @@ class WebhookResult:
     duplicate: bool
 
 
+SUPPORTED_WEBHOOK_EVENT_TYPES = frozenset(
+    {
+        "checkout.session.completed",
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    }
+)
+
+
 def _parse_tenant_id(value: Any) -> int:
     try:
         tenant_id = int(value)
@@ -120,7 +130,8 @@ def _handle_checkout_completed(
                 "The subscription customer does not match"
             )
 
-        # Subscription events carry more authoritative status.
+        # Subscription events are authoritative. Checkout must not
+        # overwrite their status or advance their ordering watermark.
         return
 
     subscriptions_repository.upsert_subscription(
@@ -186,6 +197,10 @@ def _dispatch_event(
             stripe_event_id=event_id,
             stripe_event_created=stripe_event_created,
             deleted=True,
+        )
+    else:
+        raise InvalidWebhookPayloadError(
+            f"Unsupported Stripe event type: {event_type}"
         )
 
 def _timestamp_to_datetime(
@@ -405,6 +420,12 @@ def process_webhook(
 
     event_id = event["id"]
     event_type = event["type"]
+
+    if event_type not in SUPPORTED_WEBHOOK_EVENT_TYPES:
+        raise InvalidWebhookPayloadError(
+            f"Unsupported Stripe event type: {event_type}"
+        )
+
     event_created = _parse_event_created(
         event["created"]
     )

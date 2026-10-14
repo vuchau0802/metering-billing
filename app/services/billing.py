@@ -4,7 +4,11 @@ import stripe
 from sqlalchemy.orm import Session
 from stripe import StripeClient
 
-from app.config import get_settings
+from app.config import (
+    MICROUSD_PER_CENT,
+    PRO_MONTHLY_PRICE_MICROUSD,
+    get_settings,
+)
 from app.models import PlanName, TenantStatus
 from app.repositories import tenants as tenants_repository
 from app.schemas import CheckoutResponse
@@ -27,6 +31,28 @@ class AlreadySubscribedError(Exception):
 
 class CheckoutCreationError(Exception):
     pass
+
+
+def _validate_pro_price(price: Any) -> None:
+    recurring = getattr(price, "recurring", None)
+    unit_amount = getattr(price, "unit_amount", None)
+
+    matches_plan = (
+        getattr(price, "active", False) is True
+        and getattr(price, "currency", None) == "usd"
+        and recurring is not None
+        and getattr(recurring, "interval", None) == "month"
+        and getattr(recurring, "interval_count", None) == 1
+        and isinstance(unit_amount, int)
+        and unit_amount * MICROUSD_PER_CENT
+        == PRO_MONTHLY_PRICE_MICROUSD
+    )
+
+    if not matches_plan:
+        raise BillingConfigurationError(
+            "The configured Pro Stripe Price does not match "
+            "the local Pro plan"
+        )
 
 
 def create_checkout_session(
@@ -109,6 +135,17 @@ def create_checkout_session(
         parameters["customer_email"] = tenant.email
 
     client = StripeClient(settings.stripe_secret_key)
+
+    try:
+        stripe_price = client.v1.prices.retrieve(
+            pro_plan.stripe_price_id
+        )
+    except stripe.StripeError as error:
+        raise CheckoutCreationError(
+            "Stripe could not retrieve the configured Pro Price"
+        ) from error
+
+    _validate_pro_price(stripe_price)
 
     try:
         session = client.v1.checkout.sessions.create(parameters)

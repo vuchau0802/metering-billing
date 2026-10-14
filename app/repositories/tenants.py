@@ -1,7 +1,16 @@
+from dataclasses import dataclass
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Plan, PlanName, Tenant
+
+
+@dataclass(frozen=True)
+class InvoiceGenerationTarget:
+    tenant_id: int
+    created_at: datetime
 
 
 def get_tenant_with_plan_for_update(
@@ -75,7 +84,18 @@ def get_plan(
     return db.get(Plan, plan_name)
 
 
-def list_tenant_ids(db: Session) -> list[int]:
-    statement = select(Tenant.id).order_by(Tenant.id)
+def list_invoice_generation_targets(
+    db: Session,
+) -> list[InvoiceGenerationTarget]:
+    statement = select(
+        Tenant.id,
+        Tenant.created_at,
+    ).order_by(Tenant.id)
 
-    return list(db.scalars(statement))
+    return [
+        InvoiceGenerationTarget(
+            tenant_id=row[0],
+            created_at=row[1],
+        )
+        for row in db.execute(statement)
+    ]
